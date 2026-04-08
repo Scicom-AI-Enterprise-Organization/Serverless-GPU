@@ -97,7 +97,7 @@ def _install_criu() -> None:
     run(["git", "clone", "--depth", "1", "--branch", CRIU_VERSION, CRIU_REPO, str(work)])
 
     nproc = run(["nproc"]).stdout.strip()
-    run(["make", "-j", nproc], check=True, capture=False if False else True)
+    run(["make", "-j", nproc], cwd=str(work))
 
     # Move binaries into place
     shutil.copy(work / "criu" / "criu", "/usr/local/bin/criu")

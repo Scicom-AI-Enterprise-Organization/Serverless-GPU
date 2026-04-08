@@ -29,6 +29,7 @@ def run(
     capture: bool = True,
     timeout: Optional[float] = None,
     input: Optional[str] = None,
+    cwd: Optional[str] = None,
 ) -> subprocess.CompletedProcess:
     """Run a command, capturing stdout/stderr.
 
@@ -41,6 +42,7 @@ def run(
         text=True,
         timeout=timeout,
         input=input,
+        cwd=cwd,
     )
     if check and result.returncode != 0:
         raise ShellError(cmd, result.returncode, result.stdout or "", result.stderr or "")

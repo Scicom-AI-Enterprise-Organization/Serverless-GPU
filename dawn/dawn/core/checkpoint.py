@@ -112,6 +112,12 @@ class Checkpoint:
                 logger.error("CRIU dump failed: %s", e.stderr)
                 raise
 
+        # Snapshot /dev/shm link_remap+sem files BEFORE tmpfs cleans them up
+        # (orphan POSIX semaphores get auto-removed once their owning process dies)
+        snapshotted = shm.snapshot_shm_into_checkpoint(out)
+        if snapshotted:
+            logger.debug("snapshotted %d /dev/shm files into checkpoint", snapshotted)
+
         # Re-check the GPU state after
         gpu_state_after = gpu.get_state(cuda_pid) if cuda_pid else "killed"
 
@@ -182,10 +188,13 @@ class Checkpoint:
         if not ckpt.is_dir():
             raise FileNotFoundError(f"checkpoint dir not found: {ckpt}")
 
-        # Pre-create /dev/shm semaphore placeholders for link-remap
-        created = shm.precreate_sem_placeholders(ckpt)
-        if created:
-            logger.debug("pre-created %d semaphore placeholders", len(created))
+        # Restore /dev/shm link_remap and sem files that we snapshotted at dump time.
+        # CRIU needs these hardlinks to exist on disk so it can re-link them into
+        # the restored process. Without this step, restore fails with:
+        #   Can't link dev/shm/link_remap.N -> dev/shm/sem.X: No such file or directory
+        restored_shm = shm.restore_shm_from_checkpoint(ckpt)
+        if restored_shm:
+            logger.debug("restored %d /dev/shm files from checkpoint", restored_shm)
 
         # Optionally pre-warm page cache
         if pre_warm:
