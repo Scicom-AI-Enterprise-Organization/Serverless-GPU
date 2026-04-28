@@ -120,6 +120,18 @@ async def lifespan(app: FastAPI):
                     f"(or set PROVIDER=fake for local dev with no real GPU)"
                 )
 
+        if provider_name == "runpod":
+            missing = []
+            for var in ("RUNPOD_API_KEY", "RUNPOD_TEMPLATE_ID", "GATEWAY_PUBLIC_URL"):
+                v = os.environ.get(var, "")
+                if not v or v in ("replace-me", "changeme"):
+                    missing.append(var)
+            if missing:
+                raise RuntimeError(
+                    f"PROVIDER=runpod requires {missing} to be set "
+                    f"(or set PROVIDER=fake for local dev with no real GPU)"
+                )
+
         app.state.provider = build_provider(provider_name)
         app.state.autoscaler_task = asyncio.create_task(
             autoscaler_loop(app.state.redis, app.state.provider)

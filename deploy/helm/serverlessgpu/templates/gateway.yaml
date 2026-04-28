@@ -112,6 +112,30 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- end }}
+            {{- if and .Values.gateway.autoscaler (eq .Values.gateway.provider "runpod") }}
+            - name: RUNPOD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "serverlessgpu.fullname" . }}-runpod
+                  key: RUNPOD_API_KEY
+            - name: RUNPOD_TEMPLATE_ID
+              value: {{ .Values.runpod.templateId | quote }}
+            - name: RUNPOD_API_BASE
+              value: {{ .Values.runpod.apiBase | quote }}
+            - name: RUNPOD_CLOUD_TYPE
+              value: {{ .Values.runpod.cloudType | quote }}
+            - name: RUNPOD_CONTAINER_DISK_GB
+              value: {{ .Values.runpod.containerDiskInGb | quote }}
+            - name: RUNPOD_VOLUME_GB
+              value: {{ .Values.runpod.volumeInGb | quote }}
+            {{- if .Values.runpod.tsAuthKey }}
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "serverlessgpu.fullname" . }}-runpod
+                  key: TS_AUTHKEY
+            {{- end }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

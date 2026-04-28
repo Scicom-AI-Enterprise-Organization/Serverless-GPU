@@ -126,4 +126,7 @@ def build_provider(name: str) -> Provider:
     if name == "primeintellect":
         from .pi_provider import PrimeIntellectProvider
         return PrimeIntellectProvider()
+    if name == "runpod":
+        from .runpod_provider import RunPodProvider
+        return RunPodProvider()
     raise ValueError(f"unknown provider: {name}")

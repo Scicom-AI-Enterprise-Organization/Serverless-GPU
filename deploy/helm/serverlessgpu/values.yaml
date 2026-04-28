@@ -82,6 +82,18 @@ primeintellect:
   dataCenterId: ""
   maxPriceHr: ""                 # leave blank to disable cap
 
+# RunPod provider config — only consumed when gateway.provider == runpod.
+# Baked into a Secret on the gateway pods. tsAuthKey is optional but required
+# when the gateway's redis is only reachable via your tailnet.
+runpod:
+  apiKey: ""                     # RUNPOD_API_KEY (set via --set; never commit)
+  templateId: ""                 # RUNPOD_TEMPLATE_ID (id of your private template)
+  apiBase: "https://rest.runpod.io/v1"
+  cloudType: "COMMUNITY"         # COMMUNITY (cheaper, unverified hosts) or SECURE
+  containerDiskInGb: 50
+  volumeInGb: 0
+  tsAuthKey: ""                  # TS_AUTHKEY (Tailscale, set via --set if redis is on a tailnet)
+
 # Extra env passed to the gateway pod (last writer wins over the above).
 extraEnv: []
 # - name: LOG_LEVEL
