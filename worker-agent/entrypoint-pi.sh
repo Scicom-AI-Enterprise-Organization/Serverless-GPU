@@ -14,6 +14,28 @@ set -euo pipefail
 : "${GATEWAY_URL:?GATEWAY_URL env var required}"
 : "${REGISTRATION_TOKEN:?REGISTRATION_TOKEN env var required}"
 
+# Tailscale: when TS_AUTHKEY is set, join the user's tailnet so we can
+# reach gateway-side Redis proxy via MagicDNS. Skipped when unset (e.g.
+# bare-metal hosts that already run tailscaled, or local dev).
+if [ -n "${TS_AUTHKEY:-}" ]; then
+  echo "[entrypoint] starting tailscaled (kernel mode)"
+  mkdir -p /var/run/tailscale /var/lib/tailscale
+  tailscaled --state=/var/lib/tailscale/tailscaled.state \
+             --socket=/var/run/tailscale/tailscaled.sock &
+  for i in $(seq 1 30); do
+    [ -S /var/run/tailscale/tailscaled.sock ] && break
+    sleep 1
+  done
+  echo "[entrypoint] tailscale up (hostname=${MACHINE_ID}, ephemeral)"
+  tailscale up --auth-key="${TS_AUTHKEY}" \
+               --hostname="${MACHINE_ID}" \
+               --ephemeral=true \
+               --accept-dns=true \
+               --reset
+  echo "[entrypoint] tailnet status:"
+  tailscale status | head -5 || true
+fi
+
 VLLM_PORT="${VLLM_PORT:-8000}"
 VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:-}"
 

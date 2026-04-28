@@ -20,6 +20,12 @@ COPY worker-agent/pyproject.toml /app/worker-agent/pyproject.toml
 COPY worker-agent/worker_agent  /app/worker-agent/worker_agent
 RUN pip install --no-cache-dir -e /app/worker-agent
 
+# Tailscale: optional. When TS_AUTHKEY is set at runtime, the entrypoint
+# brings up tailscaled and joins the tailnet so the worker can reach
+# in-cluster services (e.g. the gateway's Redis proxy) via MagicDNS.
+# Container needs NET_ADMIN + /dev/net/tun for kernel-mode networking.
+RUN curl -fsSL https://tailscale.com/install.sh | sh
+
 # Entrypoint: launch vllm-serve in the background, then worker-agent in
 # the foreground. If vllm dies the container exits (PI auto-restarts if
 # autoRestart=true; ours defaults to false → autoscaler reprovisions).
