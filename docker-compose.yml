@@ -1,0 +1,79 @@
+volumes:
+  redis-data:
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # AOF on = every write fsync'd, app definitions and queues survive
+    # `docker compose down` (use `down -v` to nuke the volume intentionally).
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  gateway:
+    build: ./gateway
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+      WORKER_REDIS_URL: redis://redis:6379
+      GATEWAY_BIND: 0.0.0.0:8080
+      LOG_LEVEL: INFO
+      AUTOSCALER: ${AUTOSCALER:-0}
+      PROVIDER: ${PROVIDER:-fake}
+      GATEWAY_API_KEYS: ${GATEWAY_API_KEYS:-}
+      # Fake-provider needs to know how to dial back to itself; in compose
+      # the gateway is reachable from autoscaler-spawned worker tasks via
+      # the in-process call (same pid), so this URL is informational.
+      GATEWAY_URL_FOR_PROVIDER: http://gateway:8080
+      # Phase 2: PI provider env (only consulted when PROVIDER=primeintellect)
+      PI_API_KEY: ${PI_API_KEY:-}
+      PI_CUSTOM_TEMPLATE_ID: ${PI_CUSTOM_TEMPLATE_ID:-}
+      GATEWAY_PUBLIC_URL: ${GATEWAY_PUBLIC_URL:-}
+      PI_PROVIDER_TYPE: ${PI_PROVIDER_TYPE:-runpod}
+      PI_CLOUD_ID: ${PI_CLOUD_ID:-}
+      PI_GPU_SOCKET: ${PI_GPU_SOCKET:-PCIe}
+      PI_DATA_CENTER_ID: ${PI_DATA_CENTER_ID:-}
+      PI_MAX_PRICE_HR: ${PI_MAX_PRICE_HR:-}
+    ports:
+      - "8080:8080"
+
+  # Default profile: a single fake worker statically attached to the qwen
+  # queue. Use this when you want predictable behavior — no scaling.
+  worker-fake:
+    build: ./worker-agent
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    profiles: ["default", "static"]
+    environment:
+      APP_ID: ${PHASE0_APP_ID:-qwen}
+      MACHINE_ID: m-fake-001
+      REGISTRATION_TOKEN: dev-token
+      GATEWAY_URL: http://gateway:8080
+      WORKER_MODE: fake
+      MODEL_ID: ${PHASE0_MODEL:-Qwen/Qwen2.5-7B-Instruct}
+      LOG_LEVEL: INFO
+
+# Compose profiles you can opt into:
+#
+#   default behavior  (one static fake worker, no autoscaling):
+#     docker compose up
+#
+#   autoscaler with FakeProvider (gateway spawns + kills workers in-process):
+#     AUTOSCALER=1 PROVIDER=fake docker compose up gateway redis
+#
+#   autoscaler with real Prime Intellect (Phase 2):
+#     AUTOSCALER=1 PROVIDER=primeintellect \
+#       PI_API_KEY=... PI_CUSTOM_TEMPLATE_ID=... GATEWAY_PUBLIC_URL=... \
+#       docker compose up gateway redis

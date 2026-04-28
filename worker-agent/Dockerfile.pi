@@ -1,0 +1,33 @@
+# PI custom-template image: vLLM + worker-agent.
+#
+# Build:
+#   docker build -t youraccount/serverlessgpu-pi-worker:v1 -f worker-agent/Dockerfile.pi .
+#
+# Push to a registry PI can pull from, then create a custom template in the PI
+# dashboard pointing at it. Set PI_CUSTOM_TEMPLATE_ID to that template's id.
+#
+# Required env (injected by gateway via PI envVars[]):
+#   APP_ID, MACHINE_ID, MODEL_ID, GATEWAY_URL, REGISTRATION_TOKEN
+# Optional:
+#   WORKER_MODE=vllm (default), VLLM_PORT=8000, VLLM_EXTRA_ARGS, HF_TOKEN
+FROM vllm/vllm-openai:latest
+
+# vLLM image is Ubuntu-based with python3 + pip already.
+WORKDIR /app
+
+# Copy worker-agent source and install
+COPY worker-agent/pyproject.toml /app/worker-agent/pyproject.toml
+COPY worker-agent/worker_agent  /app/worker-agent/worker_agent
+RUN pip install --no-cache-dir -e /app/worker-agent
+
+# Entrypoint: launch vllm-serve in the background, then worker-agent in
+# the foreground. If vllm dies the container exits (PI auto-restarts if
+# autoRestart=true; ours defaults to false → autoscaler reprovisions).
+COPY worker-agent/entrypoint-pi.sh /usr/local/bin/entrypoint-pi.sh
+RUN chmod +x /usr/local/bin/entrypoint-pi.sh
+
+ENV WORKER_MODE=vllm
+ENV VLLM_URL=http://127.0.0.1:8000
+ENV VLLM_PORT=8000
+
+ENTRYPOINT ["/usr/local/bin/entrypoint-pi.sh"]
