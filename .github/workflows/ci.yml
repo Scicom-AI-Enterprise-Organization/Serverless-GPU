@@ -30,7 +30,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
-          enable-cache: true
+          enable-cache: false
 
       - name: Install packages
         run: |
@@ -61,9 +61,10 @@ jobs:
           helm template ci deploy/helm/serverlessgpu/ \
             --set primeintellect.apiKey=fake-ci-key \
             --set primeintellect.customTemplateId=tmpl-ci \
+            --set postgres.password=fake-ci-pw \
             --set ingress.host=api.example.com \
             --set gateway.publicUrl=https://api.example.com \
-            --set gateway.apiKeys=key1,key2 > /tmp/rendered.yaml
+            --set 'gateway.apiKeys=key1\,key2' > /tmp/rendered.yaml
           # Sanity check the rendered manifests parse as YAML
           python -c "import yaml; list(yaml.safe_load_all(open('/tmp/rendered.yaml')))"
 
