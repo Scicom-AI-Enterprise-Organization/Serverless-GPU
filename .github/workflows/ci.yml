@@ -55,8 +55,8 @@ jobs:
       ECR_ROLE: arn:aws:iam::865626945255:role/AIES-Serverlessgpu-ECRAccessRole
       ECR_REGISTRY: 865626945255.dkr.ecr.ap-southeast-5.amazonaws.com
       ECR_PUBLIC_ALIAS: o6x1g6b0                          # public.ecr.aws/<alias>; claim custom via Console
-      GATEWAY_REPO: aies/serverlessgpu-gateway
-      WEB_REPO: aies/serverlessgpu-web
+      GATEWAY_REPO: aies/serverlessgpu-gateway-ecr
+      WEB_REPO: aies/serverlessgpu-web-ecr
       WORKER_REPO: serverlessgpu-pi-worker                # public ECR repo name
       # Public gateway URL baked into the web image at build time (NEXT_PUBLIC_*
       # vars are inlined). Override via repo variable if the host changes.

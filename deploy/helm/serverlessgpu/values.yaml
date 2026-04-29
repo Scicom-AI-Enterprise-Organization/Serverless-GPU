@@ -5,7 +5,7 @@ image:
   # Gateway image lives in private AWS ECR. EKS pulls via the node IAM role —
   # no imagePullSecret needed. CI publishes on every main commit.
   registry: 865626945255.dkr.ecr.ap-southeast-5.amazonaws.com/aies
-  repository: serverlessgpu-gateway
+  repository: serverlessgpu-gateway-ecr
   tag: "latest"          # pin to a SHA in real prod (e.g. "a1b2c3d")
   pullPolicy: IfNotPresent
   # Set only if you've moved the image to a registry needing auth secrets.
@@ -68,8 +68,8 @@ web:
   enabled: false
   replicaCount: 1
   image:
-    registry: public.ecr.aws/o6x1g6b0
-    repository: aies/serverlessgpu-web
+    registry: 865626945255.dkr.ecr.ap-southeast-5.amazonaws.com/aies
+    repository: serverlessgpu-web-ecr
     tag: "latest"
     pullPolicy: IfNotPresent
   # If empty, derived from ingress.host (same as the gateway URL).
