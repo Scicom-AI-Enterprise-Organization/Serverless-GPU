@@ -41,6 +41,12 @@ class Provider(ABC):
         reconciler to GC orphans."""
         ...
 
+    async def list_machines_for_app(self, app_id: str) -> list[str]:
+        """Machines (registered or orphaned) belonging to a specific app.
+        Default falls back to list_machines; providers that can filter
+        cheaply (e.g. by pod name prefix) should override."""
+        return await self.list_machines()
+
     async def shutdown(self) -> None:
         """Kill everything. Called on gateway shutdown."""
 

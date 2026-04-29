@@ -218,6 +218,23 @@ class RunPodProvider(Provider):
                 self._pod_ids.setdefault(machine_id, pod["id"])
         return out
 
+    async def list_machines_for_app(self, app_id: str) -> list[str]:
+        out: list[str] = []
+        prefix = f"{self.name_prefix}-{app_id}-"
+        r = await self._client.get("/pods")
+        if r.status_code >= 400:
+            raise RuntimeError(f"RunPod list_pods failed: {r.status_code} {r.text}")
+        for pod in r.json() or []:
+            name = pod.get("name", "")
+            if not name.startswith(prefix):
+                continue
+            idx = name.find("m-rp-")
+            if idx >= 0:
+                machine_id = name[idx:]
+                out.append(machine_id)
+                self._pod_ids.setdefault(machine_id, pod["id"])
+        return out
+
     async def _lookup_pod_id_by_machine_id(self, machine_id: str) -> Optional[str]:
         r = await self._client.get("/pods")
         if r.status_code >= 400:

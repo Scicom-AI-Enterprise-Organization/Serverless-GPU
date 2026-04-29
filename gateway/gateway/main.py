@@ -532,19 +532,29 @@ async def delete_app(
     rdb = request.app.state.redis
     app = await _load_owned_app(session, app_id, user)
 
-    machine_ids = await rdb.smembers(f"worker_index:{app_id}")
-    for mid in machine_ids:
+    tracked = set(await rdb.smembers(f"worker_index:{app_id}"))
+    for mid in tracked:
         await rdb.set(f"worker:{mid}:drain", "1", ex=600)
-    logger.info("delete app %s: marked %d workers for drain", app_id, len(machine_ids))
+    logger.info("delete app %s: marked %d tracked workers for drain", app_id, len(tracked))
 
     provider = getattr(request.app.state, "provider", None)
+    all_machines = set(tracked)
     if provider is not None:
-        for mid in machine_ids:
+        try:
+            orphans = set(await provider.list_machines_for_app(app_id)) - tracked
+            if orphans:
+                logger.info("delete app %s: also terminating %d orphan workers", app_id, len(orphans))
+                all_machines |= orphans
+        except Exception:
+            logger.exception("delete app %s: list_machines_for_app failed", app_id)
+        for mid in all_machines:
             try:
                 await provider.terminate(mid)
             except Exception:
                 logger.exception("delete app %s: provider.terminate(%s) failed", app_id, mid)
 
+    for mid in all_machines:
+        await rdb.delete(f"worker:{mid}", f"register_token:{mid}")
     await rdb.delete(
         f"queue:{app_id}",
         f"app:{app_id}:last_request_ts",
@@ -553,7 +563,7 @@ async def delete_app(
     await session.delete(app)
     await session.commit()
 
-    return {"ok": True, "app_id": app_id, "drained_workers": len(machine_ids)}
+    return {"ok": True, "app_id": app_id, "drained_workers": len(all_machines)}
 
 
 # ----- run / result / stream -----
