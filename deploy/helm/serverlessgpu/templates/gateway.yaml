@@ -56,10 +56,26 @@ spec:
             - containerPort: 8080
               name: http
           env:
+            {{- $redisHost := printf "%s-redis" (include "serverlessgpu.fullname" .) }}
+            {{- $redisAuth := "" }}
+            {{- if .Values.redis.password }}
+            {{- $redisAuth = printf ":%s@" .Values.redis.password }}
+            {{- end }}
+            {{- $internalRedisUrl := printf "redis://%s%s:6379" $redisAuth $redisHost }}
             - name: REDIS_URL
-              value: "redis://{{ include "serverlessgpu.fullname" . }}-redis:6379"
+              value: {{ $internalRedisUrl | quote }}
+            {{- if .Values.postgres.enabled }}
+            {{- $pgHost := printf "%s-postgres" (include "serverlessgpu.fullname" .) }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "serverlessgpu.fullname" . }}-postgres-auth
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://{{ .Values.postgres.user }}:$(POSTGRES_PASSWORD)@{{ $pgHost }}:5432/{{ .Values.postgres.database }}"
+            {{- end }}
             - name: WORKER_REDIS_URL
-              value: "redis://{{ include "serverlessgpu.fullname" . }}-redis:6379"
+              value: {{ if .Values.gateway.workerRedisUrl }}{{ .Values.gateway.workerRedisUrl | quote }}{{ else }}{{ $internalRedisUrl | quote }}{{ end }}
             - name: GATEWAY_BIND
               value: "0.0.0.0:8080"
             - name: AUTOSCALER

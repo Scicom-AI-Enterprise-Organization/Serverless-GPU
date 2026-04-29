@@ -28,3 +28,13 @@ app.kubernetes.io/component: gateway
 app.kubernetes.io/name: {{ include "serverlessgpu.name" . }}
 app.kubernetes.io/component: redis
 {{- end -}}
+
+{{- define "serverlessgpu.postgres.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "serverlessgpu.name" . }}
+app.kubernetes.io/component: postgres
+{{- end -}}
+
+{{- define "serverlessgpu.web.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "serverlessgpu.name" . }}
+app.kubernetes.io/component: web
+{{- end -}}

@@ -14,9 +14,18 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import require_api_key
 from . import metrics
+from .auth import (
+    create_session,
+    current_user,
+    hash_password,
+    revoke_session,
+    verify_password,
+)
+from .db import App, Request as ReqRow, User, get_session, init_db, get_user_by_username, list_all_apps, seed_admin_user, session_factory, shutdown_db
 
 logger = logging.getLogger("gateway")
 
@@ -36,7 +45,7 @@ class CreateAppRequest(BaseModel):
     autoscaler: AutoscalerSpec = Field(default_factory=AutoscalerSpec)
     cpu: int = 2
     memory: str = "16Gi"
-    request_timeout_s: int = 600  # per-job ceiling enforced by the worker
+    request_timeout_s: int = 600
 
 
 class CreateAppResponse(BaseModel):
@@ -54,6 +63,7 @@ class AppRecord(BaseModel):
     memory: str = "16Gi"
     request_timeout_s: int = 600
     created_at: str
+    owner: str
 
 
 class RunResponse(BaseModel):
@@ -84,6 +94,42 @@ class WorkerHeartbeatRequest(BaseModel):
     status: str = "ready"
 
 
+class RegisterRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
+    password: str = Field(min_length=8, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    token: str
+    username: str
+
+
+class WhoamiResponse(BaseModel):
+    user_id: int
+    username: str
+    is_admin: bool = False
+
+
+def _to_app_record(app: App) -> AppRecord:
+    return AppRecord(
+        app_id=app.app_id,
+        name=app.name,
+        model=app.model,
+        gpu=app.gpu,
+        autoscaler=AutoscalerSpec(**app.autoscaler),
+        cpu=app.cpu,
+        memory=app.memory,
+        request_timeout_s=app.request_timeout_s,
+        created_at=app.created_at.isoformat() if app.created_at else "",
+        owner=app.owner.username if app.owner else "",
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     redis_url = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379")
@@ -92,10 +138,13 @@ async def lifespan(app: FastAPI):
     await app.state.redis.ping()
     logger.info("redis ready")
 
-    # Provider + autoscaler are opt-in for now. Enabled when AUTOSCALER=1.
+    logger.info("initializing postgres")
+    await init_db()
+    await seed_admin_user()
+    logger.info("postgres ready")
+
     app.state.provider = None
     app.state.autoscaler_task = None
-
     app.state.reconciler_task = None
     if os.environ.get("AUTOSCALER", "0") == "1":
         from .provider import build_provider
@@ -104,10 +153,6 @@ async def lifespan(app: FastAPI):
 
         provider_name = os.environ.get("PROVIDER", "fake")
 
-        # Fail-fast: when the operator says PROVIDER=primeintellect, refuse to
-        # boot if any required PI env is missing or obviously stubbed.
-        # Otherwise the autoscaler loops forever calling provision and getting
-        # 401/422 from PI, which is hard to debug from logs.
         if provider_name == "primeintellect":
             missing = []
             for var in ("PI_API_KEY", "PI_CUSTOM_TEMPLATE_ID", "GATEWAY_PUBLIC_URL"):
@@ -134,7 +179,7 @@ async def lifespan(app: FastAPI):
 
         app.state.provider = build_provider(provider_name)
         app.state.autoscaler_task = asyncio.create_task(
-            autoscaler_loop(app.state.redis, app.state.provider)
+            autoscaler_loop(app.state.redis, app.state.provider, session_factory())
         )
         app.state.reconciler_task = asyncio.create_task(
             reconciler_loop(app.state.redis, app.state.provider)
@@ -155,6 +200,7 @@ async def lifespan(app: FastAPI):
         if app.state.provider:
             await app.state.provider.shutdown()
         await app.state.redis.aclose()
+        await shutdown_db()
 
 
 app = FastAPI(title="serverless-gpu gateway", lifespan=lifespan)
@@ -162,12 +208,9 @@ app = FastAPI(title="serverless-gpu gateway", lifespan=lifespan)
 
 @app.middleware("http")
 async def metrics_mw(request: Request, call_next):
-    """Count every request by route + status; track inflight."""
     metrics.INFLIGHT.inc()
     try:
         resp = await call_next(request)
-        # Use the matched route template, not the raw path — keeps cardinality
-        # bounded (e.g. /run/{app_id} not /run/qwen, /run/llama, ...).
         route_obj = request.scope.get("route")
         route = getattr(route_obj, "path", request.url.path) if route_obj else request.url.path
         metrics.REQUESTS_TOTAL.labels(route=route, status=str(resp.status_code)).inc()
@@ -178,25 +221,16 @@ async def metrics_mw(request: Request, call_next):
 
 @app.get("/health")
 async def health():
-    """Liveness: 200 means the gateway process is alive. Does NOT verify
-    Redis — if Redis is down, restarting the gateway won't help, and we
-    don't want k8s to crashloop. Use /ready for that."""
     return {"ok": True}
 
 
 @app.get("/ready")
 async def ready(request: Request):
-    """Readiness: 200 means the gateway can actually serve requests right
-    now. Checks Redis. k8s readinessProbe should hit this so a pod that
-    can't reach Redis is removed from the Service's endpoints."""
     rdb = request.app.state.redis
     try:
         await rdb.ping()
     except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail={"redis": "unreachable", "error": str(e)[:200]},
-        )
+        raise HTTPException(status_code=503, detail={"redis": "unreachable", "error": str(e)[:200]})
     return {"ok": True, "redis": "ok"}
 
 
@@ -206,74 +240,130 @@ async def metrics_endpoint(request: Request):
     return Response(content=body, media_type=ctype)
 
 
-@app.post("/apps", response_model=CreateAppResponse, dependencies=[Depends(require_api_key)])
-async def create_app(req: CreateAppRequest, request: Request):
-    rdb = request.app.state.redis
-    record = AppRecord(
+# ----- auth -----
+
+@app.post("/auth/register", response_model=TokenResponse)
+async def register(req: RegisterRequest, request: Request, session: AsyncSession = Depends(get_session)):
+    user = User(username=req.username, password_hash=hash_password(req.password))
+    session.add(user)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail={"error": "username already taken"})
+    await session.refresh(user)
+    token = await create_session(request.app.state.redis, user.id)
+    logger.info("registered user %s (id=%d)", user.username, user.id)
+    return TokenResponse(token=token, username=user.username)
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+async def login(req: LoginRequest, request: Request, session: AsyncSession = Depends(get_session)):
+    user = await get_user_by_username(session, req.username)
+    if user is None or not verify_password(req.password, user.password_hash):
+        raise HTTPException(status_code=401, detail={"error": "invalid credentials"})
+    token = await create_session(request.app.state.redis, user.id)
+    return TokenResponse(token=token, username=user.username)
+
+
+@app.post("/auth/logout")
+async def logout(request: Request, user: User = Depends(current_user)):
+    header = request.headers.get("authorization", "")
+    token = header[len("Bearer "):].strip()
+    await revoke_session(request.app.state.redis, token)
+    return {"ok": True}
+
+
+@app.get("/auth/me", response_model=WhoamiResponse)
+async def whoami(user: User = Depends(current_user)):
+    return WhoamiResponse(user_id=user.id, username=user.username, is_admin=user.is_admin)
+
+
+# ----- apps (owner-scoped) -----
+
+@app.post("/apps", response_model=CreateAppResponse)
+async def create_app(
+    req: CreateAppRequest,
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    record = App(
         app_id=req.name,
+        owner_id=user.id,
         name=req.name,
         model=req.model,
         gpu=req.gpu,
-        autoscaler=req.autoscaler,
+        autoscaler=req.autoscaler.model_dump(),
         cpu=req.cpu,
         memory=req.memory,
         request_timeout_s=req.request_timeout_s,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(timezone.utc),
     )
-    await rdb.set(f"app:{req.name}", record.model_dump_json())
-    await rdb.sadd("apps:index", req.name)
-    logger.info("created app %s (%s on %s)", req.name, req.model, req.gpu)
+    session.add(record)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail={"error": "app name already taken"})
+    logger.info("created app %s by user=%s (%s on %s)", req.name, user.username, req.model, req.gpu)
     return CreateAppResponse(app_id=req.name, url=f"/run/{req.name}")
 
 
-@app.get("/apps", response_model=list[AppRecord], dependencies=[Depends(require_api_key)])
-async def list_apps(request: Request):
-    """All deployed apps. Backed by `apps:index` Redis set."""
-    rdb = request.app.state.redis
-    app_ids = sorted(await rdb.smembers("apps:index"))
-    out: list[AppRecord] = []
-    for app_id in app_ids:
-        blob = await rdb.get(f"app:{app_id}")
-        if blob is None:
-            # Index drift: remove and continue.
-            await rdb.srem("apps:index", app_id)
-            continue
-        out.append(AppRecord(**json.loads(blob)))
-    return out
+@app.get("/apps", response_model=list[AppRecord])
+async def list_apps(
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    stmt = select(App).options(selectinload(App.owner))
+    if not user.is_admin:
+        stmt = stmt.where(App.owner_id == user.id)
+    result = await session.execute(stmt)
+    apps = result.scalars().all()
+    return [_to_app_record(a) for a in apps]
 
 
-@app.get("/apps/{app_id}", response_model=AppRecord, dependencies=[Depends(require_api_key)])
-async def get_app(app_id: str, request: Request):
-    rdb = request.app.state.redis
-    blob = await rdb.get(f"app:{app_id}")
-    if blob is None:
-        raise HTTPException(status_code=404, detail="not found")
-    return AppRecord(**json.loads(blob))
-
-
-@app.delete("/apps/{app_id}", dependencies=[Depends(require_api_key)])
-async def delete_app(app_id: str, request: Request):
-    """Tear down an app cleanly:
-       1. Mark all its workers for drain (worker:{id}:drain set; heartbeat
-          response tells them to exit).
-       2. Wait briefly for workers to leave; let the autoscaler/reconciler GC.
-       3. Delete the queue, app record, last_request_ts, apps:index entry.
-          (In-flight result keys auto-expire via their existing TTL.)
-
-    Idempotent: deleting a non-existent app returns 404 only on first try.
-    """
-    rdb = request.app.state.redis
-    if not await rdb.exists(f"app:{app_id}"):
+async def _load_owned_app(session: AsyncSession, app_id: str, user: User) -> App:
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    result = await session.execute(
+        select(App).where(App.app_id == app_id).options(selectinload(App.owner))
+    )
+    app = result.scalar_one_or_none()
+    if app is None:
         raise HTTPException(status_code=404, detail="no such app")
+    if app.owner_id != user.id and not user.is_admin:
+        raise HTTPException(status_code=403, detail="not your app")
+    return app
 
-    # Step 1: signal workers to drain. Each one's heartbeat picks this up
-    # within the heartbeat interval (~5s) and exits.
+
+@app.get("/apps/{app_id}", response_model=AppRecord)
+async def get_app_endpoint(
+    app_id: str,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    app = await _load_owned_app(session, app_id, user)
+    return _to_app_record(app)
+
+
+@app.delete("/apps/{app_id}")
+async def delete_app(
+    app_id: str,
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    rdb = request.app.state.redis
+    app = await _load_owned_app(session, app_id, user)
+
     machine_ids = await rdb.smembers(f"worker_index:{app_id}")
     for mid in machine_ids:
         await rdb.set(f"worker:{mid}:drain", "1", ex=600)
     logger.info("delete app %s: marked %d workers for drain", app_id, len(machine_ids))
 
-    # Step 2: provider-level termination, if a provider is wired (autoscaler on).
     provider = getattr(request.app.state, "provider", None)
     if provider is not None:
         for mid in machine_ids:
@@ -282,29 +372,31 @@ async def delete_app(app_id: str, request: Request):
             except Exception:
                 logger.exception("delete app %s: provider.terminate(%s) failed", app_id, mid)
 
-    # Step 3: blow away app state. Workers that haven't drained yet will
-    # see their queue is gone and cleanly exit; the reconciler GCs leftovers.
     await rdb.delete(
-        f"app:{app_id}",
         f"queue:{app_id}",
         f"app:{app_id}:last_request_ts",
         f"worker_index:{app_id}",
     )
-    await rdb.srem("apps:index", app_id)
+    await session.delete(app)
+    await session.commit()
 
     return {"ok": True, "app_id": app_id, "drained_workers": len(machine_ids)}
 
 
-async def _admit_and_enqueue(rdb, app_id: str, payload: dict, *, stream: bool, endpoint: str = "/v1/completions") -> tuple[str, int]:
-    """Shared logic for /run, /stream, and /v1/* OpenAI routes.
+# ----- run / result / stream -----
 
-    Returns (request_id, timeout_s). Raises HTTPException on 404 / 429.
-    """
-    app_blob = await rdb.get(f"app:{app_id}")
-    if app_blob is None:
-        raise HTTPException(status_code=404, detail="no such app")
-    app_record = json.loads(app_blob)
-    cfg = app_record["autoscaler"]
+async def _admit_and_enqueue(
+    rdb,
+    db_session: AsyncSession,
+    app_id: str,
+    user: User,
+    payload: dict,
+    *,
+    stream: bool,
+    endpoint: str = "/v1/completions",
+) -> tuple[str, int]:
+    app = await _load_owned_app(db_session, app_id, user)
+    cfg = app.autoscaler
     cap = int(cfg["max_containers"]) * int(cfg["tasks_per_container"])
     queue_len = await rdb.llen(f"queue:{app_id}")
     if queue_len >= cap:
@@ -313,7 +405,7 @@ async def _admit_and_enqueue(rdb, app_id: str, payload: dict, *, stream: bool, e
             detail={"error": "capacity exceeded", "queue_length": queue_len, "cap": cap, "retry_after_s": 5},
         )
     request_id = f"req-{uuid.uuid4().hex[:12]}"
-    timeout_s = int(app_record.get("request_timeout_s", 600))
+    timeout_s = int(app.request_timeout_s)
     job = {
         "request_id": request_id,
         "payload": payload,
@@ -322,36 +414,46 @@ async def _admit_and_enqueue(rdb, app_id: str, payload: dict, *, stream: bool, e
     }
     if stream:
         job["stream"] = True
+    db_session.add(ReqRow(
+        request_id=request_id,
+        app_id=app_id,
+        owner_id=app.owner_id,
+        endpoint=endpoint,
+        payload=payload,
+        is_stream=stream,
+    ))
+    await db_session.commit()
     await rdb.lpush(f"queue:{app_id}", json.dumps(job))
     await rdb.set(f"result:{request_id}", json.dumps({"status": "pending"}), ex=3600)
     await rdb.set(f"app:{app_id}:last_request_ts", str(time.time()))
     return request_id, timeout_s
 
 
-@app.post("/run/{app_id}", response_model=RunResponse, dependencies=[Depends(require_api_key)])
-async def run(app_id: str, payload: dict, request: Request):
+@app.post("/run/{app_id}", response_model=RunResponse)
+async def run(
+    app_id: str,
+    payload: dict,
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
     rdb = request.app.state.redis
-    request_id, _ = await _admit_and_enqueue(rdb, app_id, payload, stream=False)
-    logger.info("enqueued %s on %s", request_id, app_id)
+    request_id, _ = await _admit_and_enqueue(rdb, session, app_id, user, payload, stream=False)
+    logger.info("enqueued %s on %s (user=%s)", request_id, app_id, user.username)
     return RunResponse(request_id=request_id, poll_url=f"/result/{request_id}")
 
 
-@app.post("/stream/{app_id}", dependencies=[Depends(require_api_key)])
-async def stream(app_id: str, payload: dict, request: Request):
-    """Server-Sent Events: open a long-lived connection, get token chunks live.
-
-    Pipe shape: client SSE ↔ gateway ↔ Redis pub/sub channel ↔ worker.
-
-    The gateway subscribes BEFORE enqueueing to avoid a race where the worker
-    publishes the first chunk before we've subscribed.
-    """
+@app.post("/stream/{app_id}")
+async def stream(
+    app_id: str,
+    payload: dict,
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
     rdb = request.app.state.redis
-    app_blob = await rdb.get(f"app:{app_id}")
-    if app_blob is None:
-        raise HTTPException(status_code=404, detail="no such app")
-
-    app_record = json.loads(app_blob)
-    cfg = app_record["autoscaler"]
+    app = await _load_owned_app(session, app_id, user)
+    cfg = app.autoscaler
     cap = int(cfg["max_containers"]) * int(cfg["tasks_per_container"])
     queue_len = await rdb.llen(f"queue:{app_id}")
     if queue_len >= cap:
@@ -366,7 +468,7 @@ async def stream(app_id: str, payload: dict, request: Request):
     pubsub = rdb.pubsub()
     await pubsub.subscribe(channel)
 
-    timeout_s = int(app_record.get("request_timeout_s", 600))
+    timeout_s = int(app.request_timeout_s)
     job = {"request_id": request_id, "payload": payload, "stream": True, "timeout_s": timeout_s}
     await rdb.lpush(f"queue:{app_id}", json.dumps(job))
     await rdb.set(f"result:{request_id}", json.dumps({"status": "pending"}), ex=3600)
@@ -374,7 +476,6 @@ async def stream(app_id: str, payload: dict, request: Request):
     logger.info("enqueued stream %s on %s (timeout=%ss)", request_id, app_id, timeout_s)
 
     async def gen():
-        # Send the request id up front so clients can correlate / cancel.
         yield f"event: meta\ndata: {json.dumps({'request_id': request_id})}\n\n"
         finished_normally = False
         try:
@@ -391,9 +492,6 @@ async def stream(app_id: str, payload: dict, request: Request):
                 except json.JSONDecodeError:
                     continue
         finally:
-            # If the client disconnected, FastAPI cancels this generator and
-            # we land here without a `done` chunk. Tell the worker to stop
-            # generating so we don't burn GPU cycles on a vanished client.
             if not finished_normally:
                 try:
                     await rdb.set(f"cancel:{request_id}", "1", ex=60)
@@ -414,36 +512,122 @@ async def stream(app_id: str, payload: dict, request: Request):
     )
 
 
-@app.get("/result/{request_id}", response_model=ResultResponse, dependencies=[Depends(require_api_key)])
-async def get_result(request_id: str, request: Request):
+@app.get("/result/{request_id}", response_model=ResultResponse)
+async def get_result(
+    request_id: str,
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Result lookup. Lazily mirrors completed Redis state into the requests
+    table so the UI can show the result long after Redis TTL expires."""
     rdb = request.app.state.redis
     blob = await rdb.get(f"result:{request_id}")
     if blob is None:
-        raise HTTPException(status_code=404, detail="not found")
+        # Fall back to Postgres — Redis result key may have expired.
+        row = await session.get(ReqRow, request_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="not found")
+        if row.owner_id != user.id and not user.is_admin:
+            raise HTTPException(status_code=403, detail="not your request")
+        return ResultResponse(request_id=request_id, status=row.status, output=row.output)
+
     raw = json.loads(blob)
-    return ResultResponse(
-        request_id=request_id,
-        status=raw.get("status", "unknown"),
-        output=raw.get("output"),
+    status = raw.get("status", "unknown")
+    output = raw.get("output")
+
+    row = await session.get(ReqRow, request_id)
+    if row is not None:
+        if row.owner_id != user.id and not user.is_admin:
+            raise HTTPException(status_code=403, detail="not your request")
+        # Mirror redis -> postgres so the row reflects current state, surviving Redis TTL.
+        if row.status != status or row.output != output:
+            row.status = status
+            row.output = output
+            if status != "pending" and row.completed_at is None:
+                from datetime import datetime, timezone
+                row.completed_at = datetime.now(timezone.utc)
+            await session.commit()
+
+    return ResultResponse(request_id=request_id, status=status, output=output)
+
+
+class RequestRecord(BaseModel):
+    request_id: str
+    app_id: str
+    endpoint: str
+    payload: dict
+    status: str
+    output: Optional[Any] = None
+    is_stream: bool
+    created_at: str
+    completed_at: Optional[str] = None
+
+
+def _to_request_record(r: ReqRow) -> RequestRecord:
+    return RequestRecord(
+        request_id=r.request_id,
+        app_id=r.app_id,
+        endpoint=r.endpoint,
+        payload=r.payload,
+        status=r.status,
+        output=r.output,
+        is_stream=r.is_stream,
+        created_at=r.created_at.isoformat() if r.created_at else "",
+        completed_at=r.completed_at.isoformat() if r.completed_at else None,
     )
 
 
-async def _openai_endpoint(request: Request, payload: dict, vllm_path: str):
-    """OpenAI-compatible facade. Reads `model` from the request body, treats
-    it as our app_id, enqueues with `endpoint=vllm_path` so the worker forwards
-    to the right vLLM endpoint. Supports `stream: true` via SSE pubsub.
-    """
+@app.get("/requests/{request_id}", response_model=RequestRecord)
+async def get_request(
+    request_id: str,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    row = await session.get(ReqRow, request_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    if row.owner_id != user.id and not user.is_admin:
+        raise HTTPException(status_code=403, detail="not your request")
+    return _to_request_record(row)
+
+
+@app.get("/apps/{app_id}/requests", response_model=list[RequestRecord])
+async def list_app_requests(
+    app_id: str,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+    limit: int = 50,
+    status_filter: Optional[str] = None,
+):
+    """Recent requests for an app, newest first. Owner-scoped (admin sees all)."""
+    await _load_owned_app(session, app_id, user)
+    from sqlalchemy import select, desc
+    stmt = select(ReqRow).where(ReqRow.app_id == app_id).order_by(desc(ReqRow.created_at)).limit(min(limit, 200))
+    if status_filter:
+        stmt = stmt.where(ReqRow.status == status_filter)
+    result = await session.execute(stmt)
+    return [_to_request_record(r) for r in result.scalars().all()]
+
+
+async def _openai_endpoint(
+    request: Request,
+    db_session: AsyncSession,
+    user: User,
+    payload: dict,
+    vllm_path: str,
+):
     rdb = request.app.state.redis
     app_id = payload.get("model")
     if not app_id:
         raise HTTPException(status_code=400, detail={"error": "missing 'model' field in request body"})
 
     is_stream = bool(payload.get("stream"))
-    request_id, _timeout_s = await _admit_and_enqueue(rdb, app_id, payload, stream=is_stream, endpoint=vllm_path)
+    request_id, _timeout_s = await _admit_and_enqueue(
+        rdb, db_session, app_id, user, payload, stream=is_stream, endpoint=vllm_path
+    )
 
     if not is_stream:
-        # Sync path: poll for the result up to 60s — covers warm-worker case
-        # but not cold start. Caller can re-issue if they want longer.
         deadline = time.time() + 60
         while time.time() < deadline:
             blob = await rdb.get(f"result:{request_id}")
@@ -462,7 +646,6 @@ async def _openai_endpoint(request: Request, payload: dict, vllm_path: str):
             },
         )
 
-    # Streaming path: same SSE pubsub forwarding as /stream/{app_id}
     channel = f"stream:{request_id}"
     pubsub = rdb.pubsub()
     await pubsub.subscribe(channel)
@@ -482,7 +665,7 @@ async def _openai_endpoint(request: Request, payload: dict, vllm_path: str):
                         break
                 except json.JSONDecodeError:
                     continue
-            yield "data: [DONE]\n\n"  # OpenAI's SSE terminator convention
+            yield "data: [DONE]\n\n"
         finally:
             if not finished:
                 try:
@@ -503,35 +686,43 @@ async def _openai_endpoint(request: Request, payload: dict, vllm_path: str):
     )
 
 
-@app.post("/v1/chat/completions", dependencies=[Depends(require_api_key)])
-async def openai_chat_completions(payload: dict, request: Request):
-    """OpenAI-compatible chat completions. Use `model: "<app_id>"` in body.
-
-    Drop-in for any OpenAI client:
-      openai.OpenAI(base_url="https://your-gw/v1", api_key="...").chat.completions.create(model="qwen", ...)
-    """
-    return await _openai_endpoint(request, payload, "/v1/chat/completions")
-
-
-@app.post("/v1/completions", dependencies=[Depends(require_api_key)])
-async def openai_completions(payload: dict, request: Request):
-    """Legacy OpenAI completions endpoint."""
-    return await _openai_endpoint(request, payload, "/v1/completions")
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(
+    payload: dict,
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    return await _openai_endpoint(request, session, user, payload, "/v1/chat/completions")
 
 
-@app.post("/v1/embeddings", dependencies=[Depends(require_api_key)])
-async def openai_embeddings(payload: dict, request: Request):
-    """OpenAI-compatible embeddings (sync only, no stream)."""
+@app.post("/v1/completions")
+async def openai_completions(
+    payload: dict,
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    return await _openai_endpoint(request, session, user, payload, "/v1/completions")
+
+
+@app.post("/v1/embeddings")
+async def openai_embeddings(
+    payload: dict,
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
     payload.pop("stream", None)
-    return await _openai_endpoint(request, payload, "/v1/embeddings")
+    return await _openai_endpoint(request, session, user, payload, "/v1/embeddings")
 
+
+# ----- workers (machine auth, not user auth) -----
 
 @app.post("/workers/register", response_model=WorkerRegisterResponse)
 async def register_worker(req: WorkerRegisterRequest, request: Request):
     rdb = request.app.state.redis
 
-    # Token validation (only enforced when autoscaler is on; otherwise
-    # docker-compose's manually-started workers register with a static token).
     if os.environ.get("AUTOSCALER", "0") == "1":
         token_key = f"register_token:{req.machine_id}"
         expected = await rdb.get(token_key)
@@ -541,7 +732,6 @@ async def register_worker(req: WorkerRegisterRequest, request: Request):
                 req.machine_id, req.token[:8] + "...", "<set>" if expected else "<missing>",
             )
             raise HTTPException(status_code=401, detail="invalid or expired token")
-        # Burn the token: registrations are one-shot.
         await rdb.delete(token_key)
 
     state = {

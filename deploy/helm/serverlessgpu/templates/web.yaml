@@ -1,0 +1,99 @@
+{{- if .Values.web.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "serverlessgpu.fullname" . }}-web
+  labels:
+    {{- include "serverlessgpu.labels" . | nindent 4 }}
+    {{- include "serverlessgpu.web.selectorLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 3000
+      name: http
+  selector:
+    {{- include "serverlessgpu.web.selectorLabels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "serverlessgpu.fullname" . }}-web
+  labels:
+    {{- include "serverlessgpu.labels" . | nindent 4 }}
+    {{- include "serverlessgpu.web.selectorLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "serverlessgpu.web.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "serverlessgpu.web.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: web
+          image: "{{ .Values.web.image.registry }}/{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          imagePullPolicy: {{ .Values.web.image.pullPolicy }}
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            {{- /* Browser-side calls hit the gateway through the public URL.
+                  Server-side calls (Next.js API routes / RSC) can use the
+                  in-cluster service for lower latency. */}}
+            {{- $publicGw := .Values.web.publicGatewayUrl }}
+            {{- if and (not $publicGw) .Values.ingress.enabled .Values.ingress.host }}
+            {{- $scheme := "http" }}
+            {{- if .Values.ingress.tls.enabled }}{{ $scheme = "https" }}{{ end }}
+            {{- $publicGw = printf "%s://%s" $scheme .Values.ingress.host }}
+            {{- end }}
+            - name: NEXT_PUBLIC_GATEWAY_URL
+              value: {{ $publicGw | quote }}
+            - name: GATEWAY_URL_INTERNAL
+              value: "http://{{ include "serverlessgpu.fullname" . }}-gateway"
+            {{- with .Values.web.runpodApiKey }}
+            - name: RUNPOD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "serverlessgpu.fullname" $ }}-web
+                  key: RUNPOD_API_KEY
+            {{- end }}
+            {{- with .Values.web.runpodNamePrefix }}
+            - name: RUNPOD_NAME_PREFIX
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.web.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+{{- if .Values.web.runpodApiKey }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "serverlessgpu.fullname" . }}-web
+  labels:
+    {{- include "serverlessgpu.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  RUNPOD_API_KEY: {{ .Values.web.runpodApiKey | quote }}
+{{- end }}
+{{- end }}

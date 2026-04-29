@@ -1,61 +1,93 @@
-"""Bearer token auth on user-facing routes.
+"""User auth: register, login, session-token middleware.
 
-V0 model: shared keys from env. Set `GATEWAY_API_KEYS=key1,key2,key3`. Each
-client uses one of these in `Authorization: Bearer <key>`.
-
-Auth is *off* (all routes open) when GATEWAY_API_KEYS is empty — that's the
-default for local dev / fakeredis tests where wiring auth would just be noise.
-For any public deployment, set the env var.
-
-Routes deliberately exempted:
-  /health           - liveness probe, no auth ever
-  /workers/register - validated by the one-shot registration token
-  /workers/heartbeat - validated by machine_id existing in worker_index
+- Passwords: bcrypt-hashed in Postgres `users.password_hash`.
+- Sessions: random opaque tokens. Stored in Redis as `session:{token}` -> user_id
+  with TTL (default 7d). Logout = DEL key.
+- Bearer tokens in `Authorization: Bearer <token>` resolve to a User row.
 """
 from __future__ import annotations
 
 import os
 import secrets
+from typing import Optional
 
-from fastapi import HTTPException, Request
+import bcrypt
+from fastapi import Depends, HTTPException, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from .db import User, get_session, get_user_by_id
 
-def _load_keys() -> set[str]:
-    raw = os.environ.get("GATEWAY_API_KEYS", "")
-    return {k.strip() for k in raw.split(",") if k.strip()}
-
-
-def get_keys() -> set[str]:
-    """Re-read on each call so tests can mutate env without reloading the module."""
-    return _load_keys()
+SESSION_TTL_S = 7 * 24 * 3600  # 7 days
 
 
-def require_api_key(request: Request) -> None:
-    """FastAPI dependency. Raises 401 if Authorization header is missing or
-    doesn't carry a valid bearer key.
+def hash_password(plain: str) -> str:
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
 
-    No-op when GATEWAY_API_KEYS is empty (dev mode).
+
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode(), hashed.encode())
+    except ValueError:
+        return False
+
+
+def new_session_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+async def create_session(rdb, user_id: int) -> str:
+    token = new_session_token()
+    await rdb.set(f"session:{token}", str(user_id), ex=SESSION_TTL_S)
+    return token
+
+
+async def revoke_session(rdb, token: str) -> None:
+    await rdb.delete(f"session:{token}")
+
+
+async def resolve_session(rdb, token: str) -> Optional[int]:
+    raw = await rdb.get(f"session:{token}")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+async def current_user(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> User:
+    """FastAPI dep: resolves Authorization: Bearer <token> -> User. 401 otherwise.
+
+    When AUTH_DISABLED=1, every request acts as the seeded admin user — no
+    token required. Intended for demos / dev where security is irrelevant.
     """
-    keys = get_keys()
-    if not keys:
-        return  # auth disabled
+    if os.environ.get("AUTH_DISABLED") == "1":
+        result = await session.execute(select(User).where(User.is_admin == True).limit(1))
+        admin = result.scalar_one_or_none()
+        if admin is None:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "AUTH_DISABLED set but no admin user exists; set ADMIN_USERNAME + ADMIN_PASSWORD env"},
+            )
+        return admin
 
     header = request.headers.get("authorization", "")
     if not header.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail={"error": "missing or malformed Authorization header"},
-        )
-    presented = header[len("Bearer "):].strip()
+        raise HTTPException(status_code=401, detail={"error": "missing or malformed Authorization header"})
+    token = header[len("Bearer "):].strip()
 
-    # Constant-time comparison against each known key. Avoids timing oracles
-    # for short keys; the cost is O(N) where N = number of keys (small).
-    matched = False
-    for k in keys:
-        if secrets.compare_digest(presented, k):
-            matched = True
-    if not matched:
-        raise HTTPException(
-            status_code=401,
-            detail={"error": "invalid api key"},
-        )
+    rdb = request.app.state.redis
+    user_id = await resolve_session(rdb, token)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail={"error": "invalid or expired session"})
+
+    user = await get_user_by_id(session, user_id)
+    if user is None:
+        # Session points at a deleted user; clean up.
+        await revoke_session(rdb, token)
+        raise HTTPException(status_code=401, detail={"error": "user no longer exists"})
+    return user

@@ -114,6 +114,14 @@ class RunPodProvider(Provider):
         self.ts_authkey = ts_authkey or os.environ.get("TS_AUTHKEY")
         self.name_prefix = name_prefix or os.environ.get("RUNPOD_NAME_PREFIX", "serverlessgpu")
 
+        # Filter for hosts with compatible CUDA drivers. The vllm/vllm-openai:latest
+        # base image needs CUDA 13+; older RunPod hosts will fail with
+        # "nvidia-container-cli: requirement error: unsatisfied condition: cuda>=13.0".
+        # Override via env (comma-separated, e.g. "12.4,12.8") if the worker image
+        # is rebuilt against an older CUDA.
+        cuda_env = os.environ.get("RUNPOD_ALLOWED_CUDA_VERSIONS", "13.0")
+        self.allowed_cuda_versions = [v.strip() for v in cuda_env.split(",") if v.strip()]
+
         self._client = client or httpx.AsyncClient(
             base_url=self.api_base,
             headers={
@@ -156,6 +164,8 @@ class RunPodProvider(Provider):
             "volumeInGb": self.volume_in_gb,
             "env": env_vars,
         }
+        if self.allowed_cuda_versions:
+            body["allowedCudaVersions"] = self.allowed_cuda_versions
 
         r = await self._client.post("/pods", json=body)
         if r.status_code >= 400:
