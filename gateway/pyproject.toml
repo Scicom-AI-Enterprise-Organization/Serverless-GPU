@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gateway"
+version = "0.1.0"
+description = "Serverless-GPU control-plane gateway (FastAPI + Redis)"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "redis>=5.0",
+    "pydantic>=2.5",
+    "python-dotenv>=1.0",
+    "prometheus-client>=0.21",
+]
+
+[project.scripts]
+gateway = "gateway.main:run"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gateway*"]

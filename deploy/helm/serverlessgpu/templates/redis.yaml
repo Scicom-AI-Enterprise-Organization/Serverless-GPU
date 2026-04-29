@@ -1,0 +1,66 @@
+{{- if .Values.redis.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "serverlessgpu.fullname" . }}-redis
+  labels:
+    {{- include "serverlessgpu.labels" . | nindent 4 }}
+    {{- include "serverlessgpu.redis.selectorLabels" . | nindent 4 }}
+spec:
+  ports:
+    - port: 6379
+      targetPort: 6379
+      name: redis
+  selector:
+    {{- include "serverlessgpu.redis.selectorLabels" . | nindent 4 }}
+  clusterIP: None  # headless for stable DNS
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "serverlessgpu.fullname" . }}-redis
+  labels:
+    {{- include "serverlessgpu.labels" . | nindent 4 }}
+    {{- include "serverlessgpu.redis.selectorLabels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "serverlessgpu.fullname" . }}-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "serverlessgpu.redis.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "serverlessgpu.redis.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image }}
+          args: ["redis-server", "--appendonly", "yes"]
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          readinessProbe:
+            tcpSocket: { port: 6379 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: 6379 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: {{ .Values.redis.storage.size }}
+        {{- with .Values.redis.storage.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+{{- end }}

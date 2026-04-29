@@ -1,0 +1,152 @@
+{
+  "title": "Serverless-GPU",
+  "uid": "serverlessgpu",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "tags": ["serverlessgpu", "ml"],
+  "timezone": "browser",
+  "time": {"from": "now-1h", "to": "now"},
+  "refresh": "10s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {"text": "Prometheus", "value": "prometheus"}
+      },
+      {
+        "name": "app_id",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "query": "label_values(gateway_queue_length, app_id)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {"text": "All", "value": "$__all"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate (RPS) by route + status",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (route, status) (rate(gateway_requests_total[1m]))",
+          "legendFormat": "{{route}} {{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []}
+    },
+    {
+      "id": 2,
+      "title": "In-flight requests",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "targets": [{"expr": "sum(gateway_inflight_requests)", "refId": "A"}],
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 3,
+      "title": "Total live workers",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+      "targets": [{"expr": "sum(gateway_workers)", "refId": "A"}],
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 4,
+      "title": "5xx error rate",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 4},
+      "targets": [
+        {
+          "expr": "sum(rate(gateway_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(gateway_requests_total[5m])), 1) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 5}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Queue length per app",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "gateway_queue_length{app_id=~\"$app_id\"}",
+          "legendFormat": "{{app_id}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}
+    },
+    {
+      "id": 6,
+      "title": "Live workers per app",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "gateway_workers{app_id=~\"$app_id\"}",
+          "legendFormat": "{{app_id}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}
+    },
+    {
+      "id": 7,
+      "title": "Provisions per minute by provider + outcome",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (provider, ok) (rate(gateway_provision_total[1m]) * 60)",
+          "legendFormat": "{{provider}} ok={{ok}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "/min"}, "overrides": []}
+    },
+    {
+      "id": 8,
+      "title": "Terminates per minute by provider + outcome",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (provider, ok) (rate(gateway_terminate_total[1m]) * 60)",
+          "legendFormat": "{{provider}} ok={{ok}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "/min"}, "overrides": []}
+    }
+  ]
+}

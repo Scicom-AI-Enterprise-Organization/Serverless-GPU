@@ -1,0 +1,102 @@
+# values-prod.example.yaml
+#
+# Copy to my-values.yaml, fill in the TODOs, then:
+#   helm install sgpu deploy/helm/serverlessgpu/ -n sgpu --create-namespace -f my-values.yaml
+#
+# Every field here has a default in `values.yaml` — you only need to override
+# the ones with TODOs (and anything else you want to tune).
+
+# -----------------------------------------------------------------------------
+# Images
+# -----------------------------------------------------------------------------
+# CI publishes:
+#   gateway   → 865626945255.dkr.ecr.ap-southeast-5.amazonaws.com/aies/serverlessgpu-gateway
+#   pi-worker → public.ecr.aws/aies/serverlessgpu-pi-worker
+# These defaults match what CI ships. Override only if you've forked + redirected.
+
+image:
+  registry: 865626945255.dkr.ecr.ap-southeast-5.amazonaws.com/aies
+  repository: serverlessgpu-gateway
+  tag: latest                             # pin to a short-SHA in real prod, e.g. "a1b2c3d"
+  pullPolicy: IfNotPresent
+  # EKS pulls private ECR via the node IAM role — no pullSecret needed.
+  imagePullSecrets: []
+
+# PI worker image — pulled by Prime Intellect's network, NOT by k8s.
+# Lives in ECR Public Gallery (public.ecr.aws) so PI can pull without AWS auth.
+workerImage:
+  registry: public.ecr.aws/o6x1g6b0   # AWS-assigned alias for account 865626945255
+  repository: serverlessgpu-pi-worker
+  tag: latest
+
+# -----------------------------------------------------------------------------
+# Gateway control plane
+# -----------------------------------------------------------------------------
+gateway:
+  replicaCount: 2                          # >=2 for HA; chart adds anti-affinity
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 1000m, memory: 1Gi }
+
+  # Real GPU provisioning. Set to false + provider=fake for staging w/o burning $$.
+  autoscaler: true
+  provider: primeintellect
+
+  # Public URL workers dial back to. Leave empty to auto-derive from
+  # `ingress.host` below (with https when ingress.tls.enabled=true).
+  publicUrl: ""
+
+  # Auth on user-facing routes. Comma-separated bearer tokens.
+  # Generate: python -c "import secrets; print(secrets.token_urlsafe(32))"
+  # Multiple keys → zero-downtime rotation: add new, switch clients, drop old.
+  apiKeys: "TODO_GENERATE_THE_KEY_AND_PASTE_HERE"     # TODO
+
+  podAntiAffinity: true                    # spread replicas across nodes
+
+# -----------------------------------------------------------------------------
+# Ingress (nginx-ingress + cert-manager assumed)
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  host: api.TODO_YOUR_DOMAIN.com           # TODO; DNS this at your ingress LB
+  tls:
+    enabled: true
+    issuer: letsencrypt-prod               # cert-manager ClusterIssuer name
+  cors: false                              # enable if browsers will hit /run directly
+
+# -----------------------------------------------------------------------------
+# Redis (StatefulSet with PVC; AOF persistence)
+# -----------------------------------------------------------------------------
+redis:
+  enabled: true
+  image: redis:7-alpine
+  storage:
+    size: 5Gi                              # bump for real workloads (queues + results)
+    storageClassName: ""                   # default StorageClass; override if needed
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 500m, memory: 1Gi }
+
+# -----------------------------------------------------------------------------
+# Prime Intellect provider config
+# -----------------------------------------------------------------------------
+primeintellect:
+  apiKey: "TODO_PUT_YOUR_PI_KEY_HERE"           # TODO; stored as Secret
+  customTemplateId: "TODO_FROM_PI_DASHBOARD"    # TODO; references serverlessgpu-pi-worker
+
+  apiBase: "https://api.primeintellect.ai"
+  providerType: "runpod"                        # runpod / fluidstack / lambdalabs / ...
+  cloudId: "runpod"                             # default — verified working in smoke test
+  gpuSocket: "PCIe"
+  dataCenterId: ""                              # pin a region if needed
+  maxPriceHr: ""                                # set as a runaway-cost ceiling, e.g. "3.50"
+
+# -----------------------------------------------------------------------------
+# Optional extras
+# -----------------------------------------------------------------------------
+extraEnv:
+  - name: LOG_LEVEL
+    value: INFO
+  # - name: DEBUG_RECONCILER
+  #   value: "1"

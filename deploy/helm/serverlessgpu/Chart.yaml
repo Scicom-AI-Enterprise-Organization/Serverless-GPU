@@ -1,0 +1,9 @@
+apiVersion: v2
+name: serverlessgpu
+description: |
+  Serverless-GPU control plane. Deploys the gateway + redis. GPU workers run
+  externally on Prime Intellect (provisioned by the gateway's autoscaler) —
+  this chart does NOT spin up GPU pods inside your cluster.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

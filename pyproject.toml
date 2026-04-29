@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-W ignore::DeprecationWarning"
+log_cli = false
+log_cli_level = "INFO"

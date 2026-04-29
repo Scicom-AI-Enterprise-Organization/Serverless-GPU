@@ -1,0 +1,152 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "serverlessgpu.fullname" . }}-gateway
+  labels:
+    {{- include "serverlessgpu.labels" . | nindent 4 }}
+    {{- include "serverlessgpu.gateway.selectorLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8080
+      name: http
+  selector:
+    {{- include "serverlessgpu.gateway.selectorLabels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "serverlessgpu.fullname" . }}-gateway
+  labels:
+    {{- include "serverlessgpu.labels" . | nindent 4 }}
+    {{- include "serverlessgpu.gateway.selectorLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "serverlessgpu.gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "serverlessgpu.gateway.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      {{- if .Values.gateway.podAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "serverlessgpu.gateway.selectorLabels" . | nindent 20 }}
+      {{- end }}
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: REDIS_URL
+              value: "redis://{{ include "serverlessgpu.fullname" . }}-redis:6379"
+            - name: WORKER_REDIS_URL
+              value: "redis://{{ include "serverlessgpu.fullname" . }}-redis:6379"
+            - name: GATEWAY_BIND
+              value: "0.0.0.0:8080"
+            - name: AUTOSCALER
+              value: "{{ if .Values.gateway.autoscaler }}1{{ else }}0{{ end }}"
+            - name: PROVIDER
+              value: {{ .Values.gateway.provider | quote }}
+            {{- /* gateway.publicUrl: prefer explicit value; otherwise derive
+                  from ingress.host so a one-line `--set ingress.host=...`
+                  install does the right thing. Workers dial this URL to
+                  register, so a mismatch with ingress.host = silent failure. */}}
+            {{- $publicUrl := .Values.gateway.publicUrl }}
+            {{- if and (not $publicUrl) .Values.ingress.enabled .Values.ingress.host }}
+            {{- $scheme := "http" }}
+            {{- if .Values.ingress.tls.enabled }}{{ $scheme = "https" }}{{ end }}
+            {{- $publicUrl = printf "%s://%s" $scheme .Values.ingress.host }}
+            {{- end }}
+            {{- if $publicUrl }}
+            - name: GATEWAY_PUBLIC_URL
+              value: {{ $publicUrl | quote }}
+            {{- end }}
+            {{- if .Values.gateway.apiKeys }}
+            - name: GATEWAY_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "serverlessgpu.fullname" . }}-auth
+                  key: GATEWAY_API_KEYS
+            {{- end }}
+            {{- if and .Values.gateway.autoscaler (eq .Values.gateway.provider "primeintellect") }}
+            - name: PI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "serverlessgpu.fullname" . }}-pi
+                  key: PI_API_KEY
+            - name: PI_CUSTOM_TEMPLATE_ID
+              value: {{ .Values.primeintellect.customTemplateId | quote }}
+            - name: PI_API_BASE
+              value: {{ .Values.primeintellect.apiBase | quote }}
+            - name: PI_PROVIDER_TYPE
+              value: {{ .Values.primeintellect.providerType | quote }}
+            - name: PI_CLOUD_ID
+              value: {{ .Values.primeintellect.cloudId | quote }}
+            - name: PI_GPU_SOCKET
+              value: {{ .Values.primeintellect.gpuSocket | quote }}
+            {{- with .Values.primeintellect.dataCenterId }}
+            - name: PI_DATA_CENTER_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.primeintellect.maxPriceHr }}
+            - name: PI_MAX_PRICE_HR
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if and .Values.gateway.autoscaler (eq .Values.gateway.provider "runpod") }}
+            - name: RUNPOD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "serverlessgpu.fullname" . }}-runpod
+                  key: RUNPOD_API_KEY
+            - name: RUNPOD_TEMPLATE_ID
+              value: {{ .Values.runpod.templateId | quote }}
+            - name: RUNPOD_API_BASE
+              value: {{ .Values.runpod.apiBase | quote }}
+            - name: RUNPOD_CLOUD_TYPE
+              value: {{ .Values.runpod.cloudType | quote }}
+            - name: RUNPOD_CONTAINER_DISK_GB
+              value: {{ .Values.runpod.containerDiskInGb | quote }}
+            - name: RUNPOD_VOLUME_GB
+              value: {{ .Values.runpod.volumeInGb | quote }}
+            {{- if .Values.runpod.tsAuthKey }}
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "serverlessgpu.fullname" . }}-runpod
+                  key: TS_AUTHKEY
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /ready, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6  # don't restart on transient blips
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}

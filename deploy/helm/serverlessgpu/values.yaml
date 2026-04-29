@@ -1,0 +1,100 @@
+# Values for the serverlessgpu chart.
+# Override via `helm install ... -f my-values.yaml` or `--set key=value`.
+
+image:
+  # Gateway image lives in private AWS ECR. EKS pulls via the node IAM role —
+  # no imagePullSecret needed. CI publishes on every main commit.
+  registry: 865626945255.dkr.ecr.ap-southeast-5.amazonaws.com/aies
+  repository: serverlessgpu-gateway
+  tag: "latest"          # pin to a SHA in real prod (e.g. "a1b2c3d")
+  pullPolicy: IfNotPresent
+  # Set only if you've moved the image to a registry needing auth secrets.
+  imagePullSecrets: []
+
+# PI worker image — pulled by Prime Intellect's network, NOT by your EKS.
+# Lives in ECR Public Gallery so PI can pull without AWS credentials.
+# PI's custom template references this URL.
+workerImage:
+  registry: public.ecr.aws/o6x1g6b0   # AWS-assigned ECR Public alias for account 865626945255
+  repository: serverlessgpu-pi-worker
+  tag: "latest"
+
+gateway:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  # Toggle the autoscaler. When on, set provider + PI env (see below).
+  autoscaler: true
+  provider: primeintellect       # "fake" for staging without burning GPU $$, "primeintellect" for prod
+
+  # Public URL workers dial back to. Must be reachable from PI's network.
+  # If left empty AND ingress.enabled, this is auto-derived from ingress.host
+  # (with the right scheme based on ingress.tls.enabled). Set explicitly only
+  # if you front the gateway with something other than this chart's ingress.
+  publicUrl: ""                  # auto: ingress.host derives this
+
+  # API-key auth. Comma-separated bearer tokens. Empty = auth DISABLED — set
+  # this before exposing the ingress publicly. Stored in a Secret.
+  apiKeys: ""
+
+  # Affinity / anti-affinity to spread replicas across nodes.
+  podAntiAffinity: true
+
+ingress:
+  enabled: true
+  className: nginx
+  host: api.serverlessgpu.example.com
+  tls:
+    enabled: true
+    # If using cert-manager, this annotation is enough; certificate auto-issues.
+    issuer: letsencrypt-prod
+  # Set true to add a CORS-friendly header for browser clients
+  cors: false
+
+redis:
+  enabled: true
+  image: redis:7-alpine
+  storage:
+    size: 5Gi
+    storageClassName: ""         # default storage class
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# Prime Intellect provider config — only consumed when gateway.provider == primeintellect.
+# These get baked into a Secret + ConfigMap mounted on the gateway pods.
+primeintellect:
+  apiKey: ""                     # PI_API_KEY (set via --set or values override; never commit)
+  customTemplateId: ""           # PI_CUSTOM_TEMPLATE_ID (id of your worker template on PI)
+  apiBase: "https://api.primeintellect.ai"
+  providerType: "runpod"
+  cloudId: ""
+  gpuSocket: "PCIe"
+  dataCenterId: ""
+  maxPriceHr: ""                 # leave blank to disable cap
+
+# RunPod provider config — only consumed when gateway.provider == runpod.
+# Baked into a Secret on the gateway pods. tsAuthKey is optional but required
+# when the gateway's redis is only reachable via your tailnet.
+runpod:
+  apiKey: ""                     # RUNPOD_API_KEY (set via --set; never commit)
+  templateId: ""                 # RUNPOD_TEMPLATE_ID (id of your private template)
+  apiBase: "https://rest.runpod.io/v1"
+  cloudType: "COMMUNITY"         # COMMUNITY (cheaper, unverified hosts) or SECURE
+  containerDiskInGb: 50
+  volumeInGb: 0
+  tsAuthKey: ""                  # TS_AUTHKEY (Tailscale, set via --set if redis is on a tailnet)
+
+# Extra env passed to the gateway pod (last writer wins over the above).
+extraEnv: []
+# - name: LOG_LEVEL
+#   value: DEBUG
