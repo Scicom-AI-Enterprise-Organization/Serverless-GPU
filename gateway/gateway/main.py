@@ -16,6 +16,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from . import metrics
 from .auth import (
@@ -38,6 +39,12 @@ class AutoscalerSpec(BaseModel):
     max_containers: int = 1
     tasks_per_container: int = 30
     idle_timeout_s: int = 300
+
+
+class UpdateAutoscalerRequest(BaseModel):
+    max_containers: Optional[int] = None
+    tasks_per_container: Optional[int] = None
+    idle_timeout_s: Optional[int] = None
 
 
 class CreateAppRequest(BaseModel):
@@ -487,6 +494,32 @@ async def get_app_endpoint(
 ):
     app = await _load_owned_app(session, app_id, user)
     return _to_app_record(app)
+
+
+@app.patch("/apps/{app_id}/autoscaler", response_model=AppRecord)
+async def update_app_autoscaler(
+    app_id: str,
+    req: UpdateAutoscalerRequest,
+    user: User = Depends(require_developer),
+    session: AsyncSession = Depends(get_session),
+):
+    target = await _load_owned_app(session, app_id, user)
+    cfg = dict(target.autoscaler or {})
+    updates = req.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="no fields to update")
+    for k in ("max_containers", "tasks_per_container", "idle_timeout_s"):
+        if k in updates:
+            v = int(updates[k])
+            if v < 0:
+                raise HTTPException(status_code=400, detail=f"{k} must be >= 0")
+            cfg[k] = v
+    target.autoscaler = cfg
+    flag_modified(target, "autoscaler")
+    await session.commit()
+    await session.refresh(target)
+    logger.info("autoscaler updated app=%s by user=%s: %s", app_id, user.username, updates)
+    return _to_app_record(target)
 
 
 @app.delete("/apps/{app_id}")

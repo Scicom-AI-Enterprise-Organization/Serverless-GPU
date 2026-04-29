@@ -1,14 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { ArrowUpRight, Copy, Eye, EyeOff } from "lucide-react";
+import { useEffect, useState, useTransition } from "react";
+import { ArrowUpRight, Copy, Eye, EyeOff, Loader2, Pencil } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { AppRecord } from "@/lib/types";
 import { gateway } from "@/lib/gateway";
+import { updateAutoscaler } from "../../actions";
 
 export function OverviewTab({ app }: { app: AppRecord }) {
   return (
@@ -260,21 +264,99 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 function ScaleStrategyCard({ app }: { app: AppRecord }) {
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [maxWorkers, setMaxWorkers] = useState(app.autoscaler.max_containers);
+  const [idleTimeoutS, setIdleTimeoutS] = useState(app.autoscaler.idle_timeout_s);
+  const [pending, startTransition] = useTransition();
+
+  useEffect(() => {
+    setMaxWorkers(app.autoscaler.max_containers);
+    setIdleTimeoutS(app.autoscaler.idle_timeout_s);
+  }, [app.autoscaler.max_containers, app.autoscaler.idle_timeout_s]);
+
+  function save() {
+    startTransition(async () => {
+      const res = await updateAutoscaler(app.app_id, {
+        max_containers: maxWorkers,
+        idle_timeout_s: idleTimeoutS,
+      });
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success("Scale strategy updated");
+      setEditing(false);
+      router.refresh();
+    });
+  }
+
+  function cancel() {
+    setMaxWorkers(app.autoscaler.max_containers);
+    setIdleTimeoutS(app.autoscaler.idle_timeout_s);
+    setEditing(false);
+  }
+
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex-row items-center justify-between gap-2">
         <CardTitle className="text-sm font-medium">Scale strategy</CardTitle>
+        {!editing ? (
+          <Button variant="outline" size="xs" onClick={() => setEditing(true)}>
+            <Pencil className="h-3 w-3" />
+            Edit
+          </Button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="xs" onClick={cancel} disabled={pending}>
+              Cancel
+            </Button>
+            <Button size="xs" onClick={save} disabled={pending}>
+              {pending && <Loader2 className="h-3 w-3 animate-spin" />}
+              Save
+            </Button>
+          </div>
+        )}
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         <Row label="Active workers" value={<code className="font-mono">0</code>} />
-        <Row
-          label="Max workers"
-          value={<code className="font-mono">{app.autoscaler.max_containers}</code>}
-        />
-        <Row
-          label="Idle timeout"
-          value={<code className="font-mono">{app.autoscaler.idle_timeout_s} s</code>}
-        />
+        {editing ? (
+          <>
+            <EditRow label="Max workers">
+              <Input
+                type="number"
+                min={1}
+                max={20}
+                value={maxWorkers}
+                onChange={(e) => setMaxWorkers(Math.max(1, Number(e.target.value)))}
+                className="h-8 w-24 text-right font-mono"
+                disabled={pending}
+              />
+            </EditRow>
+            <EditRow label="Idle timeout (s)">
+              <Input
+                type="number"
+                min={0}
+                max={86400}
+                value={idleTimeoutS}
+                onChange={(e) => setIdleTimeoutS(Math.max(0, Number(e.target.value)))}
+                className="h-8 w-24 text-right font-mono"
+                disabled={pending}
+              />
+            </EditRow>
+          </>
+        ) : (
+          <>
+            <Row
+              label="Max workers"
+              value={<code className="font-mono">{app.autoscaler.max_containers}</code>}
+            />
+            <Row
+              label="Idle timeout"
+              value={<code className="font-mono">{app.autoscaler.idle_timeout_s} s</code>}
+            />
+          </>
+        )}
         <Row label="Auto scaling method" value="Queue delay" />
         <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
           Scale up after <strong className="text-foreground">4</strong> seconds of queue delay.
@@ -287,6 +369,15 @@ function ScaleStrategyCard({ app }: { app: AppRecord }) {
         </p>
       </CardContent>
     </Card>
+  );
+}
+
+function EditRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between border-b border-border/40 pb-2 last:border-b-0 last:pb-0">
+      <Label className="text-muted-foreground">{label}</Label>
+      {children}
+    </div>
   );
 }
 

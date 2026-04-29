@@ -18,6 +18,20 @@ export async function deployEndpoint(input: CreateAppRequest): Promise<DeployRes
   }
 }
 
+export async function updateAutoscaler(
+  appId: string,
+  patch: Partial<{ max_containers: number; tasks_per_container: number; idle_timeout_s: number }>,
+): Promise<DeployResult> {
+  try {
+    await gateway.updateAutoscaler(appId, patch);
+    revalidatePath(`/serverless/${appId}`);
+    revalidatePath("/serverless");
+    return { ok: true, app_id: appId };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export async function deleteEndpoint(appId: string): Promise<DeployResult> {
   try {
     await gateway.deleteApp(appId);

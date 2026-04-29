@@ -48,6 +48,7 @@ export function DeployModal({
   const [model, setModel] = useState("");
   const [gpu, setGpu] = useState(GPU_CHOICES[0].value);
   const [maxWorkers, setMaxWorkers] = useState(3);
+  const [idleTimeoutS, setIdleTimeoutS] = useState(300);
   const [advanced, setAdvanced] = useState(false);
 
   // Reset the form whenever the worker prop changes (open/close).
@@ -57,6 +58,7 @@ export function DeployModal({
       setModel(worker.defaultModel);
       setGpu(GPU_CHOICES[0].value);
       setMaxWorkers(3);
+      setIdleTimeoutS(300);
       setAdvanced(false);
     }
   }, [worker]);
@@ -73,7 +75,7 @@ export function DeployModal({
         name: slugify(name),
         model: model.trim(),
         gpu,
-        autoscaler: { max_containers: maxWorkers },
+        autoscaler: { max_containers: maxWorkers, idle_timeout_s: idleTimeoutS },
       });
       if (!res.ok) {
         toast.error(res.error);
@@ -168,15 +170,26 @@ export function DeployModal({
           </button>
 
           {advanced && (
-            <Field label="Max workers" hint="Autoscaler will provision up to this many containers.">
-              <Input
-                type="number"
-                min={1}
-                max={20}
-                value={maxWorkers}
-                onChange={(e) => setMaxWorkers(Math.max(1, Number(e.target.value)))}
-              />
-            </Field>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Field label="Max workers" hint="Autoscaler will provision up to this many containers.">
+                <Input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={maxWorkers}
+                  onChange={(e) => setMaxWorkers(Math.max(1, Number(e.target.value)))}
+                />
+              </Field>
+              <Field label="Idle timeout (s)" hint="Terminate workers after this many seconds of no traffic.">
+                <Input
+                  type="number"
+                  min={0}
+                  max={86400}
+                  value={idleTimeoutS}
+                  onChange={(e) => setIdleTimeoutS(Math.max(0, Number(e.target.value)))}
+                />
+              </Field>
+            </div>
           )}
         </div>
 
