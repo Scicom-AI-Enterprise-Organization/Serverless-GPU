@@ -372,7 +372,7 @@ function RequestRow({ req, onRemove }: { req: StoredRequest; onRemove: () => voi
             {req.error ? (
               <div className="text-xs text-destructive">{req.error}</div>
             ) : req.output != null ? (
-              <pre className="max-h-72 overflow-auto rounded-md border border-border bg-background/40 p-2 font-mono text-[11px] leading-relaxed scrollbar-thin">
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md border border-border bg-background/40 p-2 font-mono text-[11px] leading-relaxed scrollbar-thin">
                 {JSON.stringify(req.output, null, 2)}
               </pre>
             ) : (
