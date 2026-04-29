@@ -8,11 +8,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 const USERNAME_RX = /^[a-zA-Z0-9_-]{3,64}$/;
+const EMAIL_RX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 export function RegisterForm() {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -21,6 +23,10 @@ export function RegisterForm() {
     e.preventDefault();
     if (!USERNAME_RX.test(username)) {
       setErr("Username must be 3–64 chars: letters, digits, _ or -");
+      return;
+    }
+    if (!EMAIL_RX.test(email)) {
+      setErr("Enter a valid email address.");
       return;
     }
     if (password.length < 8) {
@@ -36,11 +42,23 @@ export function RegisterForm() {
       const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, email, password }),
       });
       const body = await res.json().catch(() => null);
       if (!res.ok) {
-        setErr(body?.detail?.error ?? body?.error ?? `Failed (${res.status})`);
+        // FastAPI returns either {detail: {error: "..."}} for our handlers
+        // or {detail: [{loc: [...], msg: "..."}, ...]} for Pydantic validation.
+        let msg: string | undefined;
+        if (Array.isArray(body?.detail)) {
+          msg = body.detail
+            .map((d: { loc?: string[]; msg?: string }) =>
+              `${(d.loc ?? []).slice(-1)[0] ?? "field"}: ${d.msg ?? "invalid"}`,
+            )
+            .join("; ");
+        } else {
+          msg = body?.detail?.error ?? body?.error;
+        }
+        setErr(msg ?? `Failed (${res.status})`);
         return;
       }
       router.replace("/serverless");
@@ -60,6 +78,18 @@ export function RegisterForm() {
           value={username}
           onChange={(e) => setUsername(e.target.value)}
           placeholder="3–64 chars, letters/digits/_/-"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="email">Email</Label>
+        <Input
+          id="email"
+          type="email"
+          required
+          autoComplete="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@example.com"
         />
       </div>
       <div className="space-y-1.5">

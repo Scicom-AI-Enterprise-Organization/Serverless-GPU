@@ -8,6 +8,11 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# NEXT_PUBLIC_* vars are inlined at build time. Pass the public gateway URL
+# here so the curl examples in the UI point at the live endpoint, not the
+# `http://localhost:8080` fallback.
+ARG NEXT_PUBLIC_GATEWAY_URL=https://serverlessgpu.aies.scicom.dev
+ENV NEXT_PUBLIC_GATEWAY_URL=${NEXT_PUBLIC_GATEWAY_URL}
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

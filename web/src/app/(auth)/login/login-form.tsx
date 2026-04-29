@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 export function LoginForm({ next }: { next: string }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
 
@@ -21,14 +21,23 @@ export function LoginForm({ next }: { next: string }) {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ email, password }),
       });
       const body = await res.json().catch(() => null);
       if (!res.ok) {
-        setErr(body?.detail?.error ?? body?.error ?? `Failed (${res.status})`);
+        let msg: string | undefined;
+        if (Array.isArray(body?.detail)) {
+          msg = body.detail
+            .map((d: { loc?: string[]; msg?: string }) =>
+              `${(d.loc ?? []).slice(-1)[0] ?? "field"}: ${d.msg ?? "invalid"}`,
+            )
+            .join("; ");
+        } else {
+          msg = body?.detail?.error ?? body?.error;
+        }
+        setErr(msg ?? `Failed (${res.status})`);
         return;
       }
-      // Force a full nav so the middleware sees the new cookie.
       router.replace(next);
       router.refresh();
     });
@@ -37,16 +46,17 @@ export function LoginForm({ next }: { next: string }) {
   return (
     <form onSubmit={submit} className="space-y-4">
       <div className="space-y-1.5">
-        <Label htmlFor="username">Username</Label>
+        <Label htmlFor="email">Email</Label>
         <Input
-          id="username"
-          name="username"
+          id="email"
+          name="email"
+          type="email"
           required
           autoFocus
-          autoComplete="username"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          placeholder="ariff"
+          autoComplete="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@example.com"
         />
       </div>
       <div className="space-y-1.5">

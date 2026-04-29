@@ -3,27 +3,23 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Boxes, ChevronDown, KeyRound, Layers } from "lucide-react";
-import { useState } from "react";
+import { Boxes, KeyRound, Layers, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Item = { label: string; href: string; icon: React.ElementType };
 
-const HUB: Item[] = [{ label: "All workers", href: "/serverless/new", icon: Layers }];
-const RESOURCES: Item[] = [{ label: "Serverless", href: "/serverless", icon: Boxes }];
+const RESOURCES: Item[] = [
+  { label: "Serverless", href: "/serverless", icon: Boxes },
+  { label: "All workers", href: "/serverless/new", icon: Layers },
+];
 const ACCOUNT: Item[] = [{ label: "API keys", href: "/api-keys", icon: KeyRound }];
+const ADMIN: Item[] = [{ label: "Organization", href: "/organization", icon: Users }];
 
-export function ConsoleSidebar() {
+export function ConsoleSidebar({ isAdmin = false }: { isAdmin?: boolean } = {}) {
   const pathname = usePathname();
-  const [hubOpen, setHubOpen] = useState(true);
-  const [resOpen, setResOpen] = useState(true);
-  const [accountOpen, setAccountOpen] = useState(true);
 
   const isActive = (href: string) => {
-    // Exact match for non-Serverless items (API keys, All workers).
     if (href !== "/serverless") return pathname === href;
-    // "Serverless" lights up on the list and any endpoint detail page,
-    // but NOT on /serverless/new (that one belongs to "All workers").
     return pathname === "/serverless" || /^\/serverless\/(?!new$)/.test(pathname);
   };
 
@@ -47,51 +43,37 @@ export function ConsoleSidebar() {
       </Link>
 
       <nav className="flex-1 overflow-y-auto py-3 scrollbar-thin">
-        <SidebarGroup label="The Hub" open={hubOpen} setOpen={setHubOpen}>
-          {HUB.map((item) => (
-            <SidebarItem key={item.label} item={item} active={isActive(item.href)} />
-          ))}
-        </SidebarGroup>
-
-        <SidebarGroup label="Resources" open={resOpen} setOpen={setResOpen}>
+        <SidebarGroup label="Resources">
           {RESOURCES.map((item) => (
             <SidebarItem key={item.label} item={item} active={isActive(item.href)} />
           ))}
         </SidebarGroup>
 
-        <SidebarGroup label="Account" open={accountOpen} setOpen={setAccountOpen}>
+        <SidebarGroup label="Account">
           {ACCOUNT.map((item) => (
             <SidebarItem key={item.label} item={item} active={isActive(item.href)} />
           ))}
         </SidebarGroup>
+
+        {isAdmin && (
+          <SidebarGroup label="Admin">
+            {ADMIN.map((item) => (
+              <SidebarItem key={item.label} item={item} active={isActive(item.href)} />
+            ))}
+          </SidebarGroup>
+        )}
       </nav>
     </aside>
   );
 }
 
-function SidebarGroup({
-  label,
-  open,
-  setOpen,
-  children,
-}: {
-  label: string;
-  open: boolean;
-  setOpen: (v: boolean) => void;
-  children: React.ReactNode;
-}) {
+function SidebarGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <>
-      <button
-        onClick={() => setOpen(!open)}
-        className="mt-2 flex w-full items-center gap-1 px-4 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
-      >
-        <ChevronDown
-          className={cn("h-3 w-3 transition-transform", open ? "rotate-0" : "-rotate-90")}
-        />
+      <div className="mt-3 flex w-full items-center px-4 py-1.5 text-xs font-medium text-muted-foreground">
         {label}
-      </button>
-      {open && <ul className="space-y-px px-2">{children}</ul>}
+      </div>
+      <ul className="space-y-px px-2">{children}</ul>
     </>
   );
 }

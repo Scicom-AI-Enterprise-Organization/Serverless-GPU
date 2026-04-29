@@ -5,6 +5,14 @@ import { Copy, Eye, EyeOff, Loader2, RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { gateway } from "@/lib/gateway";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +27,7 @@ export function ApiKeyPanel() {
   const [reveal, setReveal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [rotating, setRotating] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   useEffect(() => {
     let abort = false;
@@ -46,7 +55,7 @@ export function ApiKeyPanel() {
 
   async function rotate() {
     if (!data) return;
-    if (!confirm("Rotate this key? The old key stops working immediately.")) return;
+    setConfirmOpen(false);
     setRotating(true);
     try {
       // "Rotate" = invalidate the current session and create a new one. The
@@ -115,7 +124,12 @@ export function ApiKeyPanel() {
               <Copy className="h-4 w-4" />
               Copy
             </Button>
-            <Button variant="outline" size="sm" onClick={rotate} disabled={rotating}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmOpen(true)}
+              disabled={rotating}
+            >
               {rotating ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
@@ -174,6 +188,28 @@ print(resp.choices[0].message.content)`}
         Multi-key support (named keys, separate revoke, last-used timestamps) needs a small gateway
         change. Today, your bearer token <em>is</em> your session — rotate by signing out and back in.
       </p>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rotate API key?</DialogTitle>
+            <DialogDescription>
+              The current key stops working immediately. Anything still using it
+              (CI jobs, scripts, SDK clients) will start receiving 401 until you
+              update them with the new token.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={rotate}>
+              <RotateCw className="h-4 w-4" />
+              Rotate now
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
