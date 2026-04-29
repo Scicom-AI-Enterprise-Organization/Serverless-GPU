@@ -74,8 +74,11 @@ jobs:
         with:
           platforms: linux/amd64,linux/arm64
 
+      # ECR push gated on the AIES-Serverlessgpu-ECRAccessRole IAM role being
+      # provisioned (in the infrastructure terraform repo). Set repo variable
+      # ENABLE_ECR_PUSH=true once the role exists; until then CI builds-only.
       - name: Configure AWS credentials (GitHub OIDC)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.ENABLE_ECR_PUSH == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.ECR_ROLE }}
@@ -84,12 +87,12 @@ jobs:
 
       - name: Login to ECR (private)
         id: ecr-private
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.ENABLE_ECR_PUSH == 'true'
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Login to ECR Public
         id: ecr-public
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.ENABLE_ECR_PUSH == 'true'
         uses: aws-actions/amazon-ecr-login@v2
         with:
           registry-type: public
@@ -99,7 +102,7 @@ jobs:
         run: |
           SHA_SHORT=${GITHUB_SHA::7}
           echo "sha_short=$SHA_SHORT" >> $GITHUB_OUTPUT
-          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ] && [ "${{ vars.ENABLE_ECR_PUSH }}" = "true" ]; then
             echo "push=true" >> $GITHUB_OUTPUT
           else
             echo "push=false" >> $GITHUB_OUTPUT
@@ -213,6 +216,7 @@ jobs:
             --set gateway.autoscaler=false \
             --set ingress.enabled=false \
             --set redis.storage.size=1Gi \
+            --set postgres.password=test-pw \
             --wait --timeout 5m
 
       - name: Wait for gateway + redis Ready
