@@ -6,6 +6,18 @@
 
 import type { AppRecord, CreateAppRequest, CreateAppResponse } from "./types";
 
+export type GatewayRequestRecord = {
+  request_id: string;
+  app_id: string;
+  endpoint: string;
+  payload: unknown;
+  status: string;
+  output: unknown | null;
+  is_stream: boolean;
+  created_at: string;
+  completed_at: string | null;
+};
+
 const PUBLIC_BASE = process.env.NEXT_PUBLIC_GATEWAY_URL ?? "http://localhost:8080";
 const isServer = typeof window === "undefined";
 
@@ -47,5 +59,9 @@ export const gateway = {
     request<{ ok: boolean; app_id: string; drained_workers: number }>(
       `/apps/${encodeURIComponent(id)}`,
       { method: "DELETE" },
+    ),
+  listAppRequests: (id: string, limit = 100) =>
+    request<GatewayRequestRecord[]>(
+      `/apps/${encodeURIComponent(id)}/requests?limit=${limit}`,
     ),
 };
