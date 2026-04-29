@@ -26,8 +26,12 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Roles: "user" (default, no platform access), "developer" (can use
+    # serverless / hub), "admin" (everything + manage roles).
+    role: Mapped[str] = mapped_column(String(16), default="user", server_default="user", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -89,6 +93,30 @@ async def init_db() -> None:
         await conn.execute(text(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE"
         ))
+        await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255)"
+        ))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users(email) WHERE email IS NOT NULL"
+        ))
+        # Role rollout: only backfill on the migration that first adds the
+        # column. After that, new users default to 'user' (no access) and
+        # admins promote them manually. Existing users at migration time get
+        # promoted to 'developer' so we don't break their current access.
+        await conn.execute(text("""
+            DO $$
+            DECLARE col_exists boolean;
+            BEGIN
+              SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'users' AND column_name = 'role'
+              ) INTO col_exists;
+              IF NOT col_exists THEN
+                ALTER TABLE users ADD COLUMN role VARCHAR(16) NOT NULL DEFAULT 'user';
+                UPDATE users SET role = CASE WHEN is_admin THEN 'admin' ELSE 'developer' END;
+              END IF;
+            END $$;
+        """))
 
 
 async def seed_admin_user() -> None:
@@ -108,10 +136,12 @@ async def seed_admin_user() -> None:
                 username=username,
                 password_hash=hash_password(password),
                 is_admin=True,
+                role="admin",
             ))
             await session.commit()
-        elif not existing.is_admin:
+        elif not existing.is_admin or existing.role != "admin":
             existing.is_admin = True
+            existing.role = "admin"
             await session.commit()
 
 

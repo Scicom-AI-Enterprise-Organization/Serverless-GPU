@@ -36,17 +36,24 @@ logger = logging.getLogger("gateway.runpod_provider")
 # /v1/gputypes endpoint and are case-sensitive.
 _GPU_NAME_MAP = {
     "H100": "NVIDIA H100 80GB HBM3",
+    "H100-80GB": "NVIDIA H100 80GB HBM3",
     "A100": "NVIDIA A100 80GB PCIe",
+    "A100-80GB": "NVIDIA A100 80GB PCIe",
     "A100-40G": "NVIDIA A100-PCIE-40GB",
     "A10G": "NVIDIA A10",
     "A10": "NVIDIA A10",
+    "A10-24GB": "NVIDIA A10",
     "L40S": "NVIDIA L40S",
+    "L40S-48GB": "NVIDIA L40S",
+    "L40": "NVIDIA L40",
     "L4": "NVIDIA L4",
     "RTX4090": "NVIDIA GeForce RTX 4090",
     "RTX3090": "NVIDIA GeForce RTX 3090",
     "rtx3090": "NVIDIA GeForce RTX 3090",
     "rtx4090": "NVIDIA GeForce RTX 4090",
     "rtx3090ti": "NVIDIA GeForce RTX 3090 Ti",
+    "RTX-A6000": "NVIDIA RTX A6000",
+    "A6000": "NVIDIA RTX A6000",
 }
 
 

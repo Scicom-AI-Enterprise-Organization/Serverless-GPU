@@ -22,6 +22,8 @@ from .auth import (
     create_session,
     current_user,
     hash_password,
+    require_admin,
+    require_developer,
     revoke_session,
     verify_password,
 )
@@ -97,10 +99,14 @@ class WorkerHeartbeatRequest(BaseModel):
 class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
     password: str = Field(min_length=8, max_length=128)
+    email: str = Field(min_length=3, max_length=255, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class LoginRequest(BaseModel):
-    username: str
+    # Accept either email or username so existing username-based clients keep
+    # working. UI now uses email; older callers can still send username.
+    email: Optional[str] = None
+    username: Optional[str] = None
     password: str
 
 
@@ -112,7 +118,27 @@ class TokenResponse(BaseModel):
 class WhoamiResponse(BaseModel):
     user_id: int
     username: str
+    email: Optional[str] = None
     is_admin: bool = False
+    role: str = "user"
+
+
+class UserRecord(BaseModel):
+    id: int
+    username: str
+    email: Optional[str] = None
+    role: str
+    is_admin: bool
+    created_at: str
+
+
+class SetRoleRequest(BaseModel):
+    role: str  # validated against {"user","developer","admin"} in the handler
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 def _to_app_record(app: App) -> AppRecord:
@@ -203,7 +229,13 @@ async def lifespan(app: FastAPI):
         await shutdown_db()
 
 
-app = FastAPI(title="serverless-gpu gateway", lifespan=lifespan)
+app = FastAPI(
+    title="serverless-gpu gateway",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 
 @app.middleware("http")
@@ -244,13 +276,17 @@ async def metrics_endpoint(request: Request):
 
 @app.post("/auth/register", response_model=TokenResponse)
 async def register(req: RegisterRequest, request: Request, session: AsyncSession = Depends(get_session)):
-    user = User(username=req.username, password_hash=hash_password(req.password))
+    user = User(
+        username=req.username,
+        email=req.email.lower(),
+        password_hash=hash_password(req.password),
+    )
     session.add(user)
     try:
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        raise HTTPException(status_code=409, detail={"error": "username already taken"})
+        raise HTTPException(status_code=409, detail={"error": "username or email already taken"})
     await session.refresh(user)
     token = await create_session(request.app.state.redis, user.id)
     logger.info("registered user %s (id=%d)", user.username, user.id)
@@ -259,11 +295,39 @@ async def register(req: RegisterRequest, request: Request, session: AsyncSession
 
 @app.post("/auth/login", response_model=TokenResponse)
 async def login(req: LoginRequest, request: Request, session: AsyncSession = Depends(get_session)):
-    user = await get_user_by_username(session, req.username)
+    if not req.email and not req.username:
+        raise HTTPException(status_code=400, detail={"error": "email or username required"})
+    user = None
+    if req.email:
+        from sqlalchemy import select
+        result = await session.execute(select(User).where(User.email == req.email.lower()))
+        user = result.scalar_one_or_none()
+    if user is None and req.username:
+        user = await get_user_by_username(session, req.username)
     if user is None or not verify_password(req.password, user.password_hash):
         raise HTTPException(status_code=401, detail={"error": "invalid credentials"})
     token = await create_session(request.app.state.redis, user.id)
     return TokenResponse(token=token, username=user.username)
+
+
+@app.post("/auth/change-password")
+async def change_password(
+    req: ChangePasswordRequest,
+    request: Request,
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    if not verify_password(req.current_password, user.password_hash):
+        raise HTTPException(status_code=401, detail={"error": "current password is wrong"})
+    user.password_hash = hash_password(req.new_password)
+    await session.commit()
+    # Invalidate the current session so the user re-logs with the new password.
+    header = request.headers.get("authorization", "")
+    token = header[len("Bearer "):].strip() if header.startswith("Bearer ") else ""
+    if token:
+        await revoke_session(request.app.state.redis, token)
+    logger.info("password changed: user=%s", user.username)
+    return {"ok": True}
 
 
 @app.post("/auth/logout")
@@ -276,7 +340,83 @@ async def logout(request: Request, user: User = Depends(current_user)):
 
 @app.get("/auth/me", response_model=WhoamiResponse)
 async def whoami(user: User = Depends(current_user)):
-    return WhoamiResponse(user_id=user.id, username=user.username, is_admin=user.is_admin)
+    return WhoamiResponse(
+        user_id=user.id,
+        username=user.username,
+        email=user.email,
+        is_admin=user.is_admin,
+        role=user.role,
+    )
+
+
+# ----- admin: role management -----
+
+@app.get("/admin/users", response_model=list[UserRecord])
+async def list_users(
+    _: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    from sqlalchemy import select
+    result = await session.execute(select(User).order_by(User.id))
+    rows = result.scalars().all()
+    return [
+        UserRecord(
+            id=u.id,
+            username=u.username,
+            email=u.email,
+            role=u.role,
+            is_admin=u.is_admin,
+            created_at=u.created_at.isoformat() if u.created_at else "",
+        )
+        for u in rows
+    ]
+
+
+@app.delete("/admin/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    actor: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    if user_id == actor.id:
+        raise HTTPException(status_code=400, detail={"error": "you cannot delete yourself"})
+    target = await session.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    username = target.username
+    await session.delete(target)
+    await session.commit()
+    logger.info("user deleted: actor=%s target=%s", actor.username, username)
+    return {"ok": True, "username": username}
+
+
+@app.patch("/admin/users/{user_id}/role", response_model=UserRecord)
+async def set_user_role(
+    user_id: int,
+    req: SetRoleRequest,
+    actor: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    if req.role not in ("user", "developer", "admin"):
+        raise HTTPException(status_code=400, detail={"error": "role must be one of: user, developer, admin"})
+    target = await session.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    if target.id == actor.id and req.role != "admin":
+        raise HTTPException(status_code=400, detail={"error": "you cannot demote yourself"})
+    target.role = req.role
+    target.is_admin = req.role == "admin"
+    await session.commit()
+    await session.refresh(target)
+    logger.info("role change: actor=%s target=%s new_role=%s", actor.username, target.username, target.role)
+    return UserRecord(
+        id=target.id,
+        username=target.username,
+        email=target.email,
+        role=target.role,
+        is_admin=target.is_admin,
+        created_at=target.created_at.isoformat() if target.created_at else "",
+    )
 
 
 # ----- apps (owner-scoped) -----
@@ -285,7 +425,7 @@ async def whoami(user: User = Depends(current_user)):
 async def create_app(
     req: CreateAppRequest,
     request: Request,
-    user: User = Depends(current_user),
+    user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
     record = App(
@@ -312,7 +452,7 @@ async def create_app(
 
 @app.get("/apps", response_model=list[AppRecord])
 async def list_apps(
-    user: User = Depends(current_user),
+    user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
     from sqlalchemy import select
@@ -342,7 +482,7 @@ async def _load_owned_app(session: AsyncSession, app_id: str, user: User) -> App
 @app.get("/apps/{app_id}", response_model=AppRecord)
 async def get_app_endpoint(
     app_id: str,
-    user: User = Depends(current_user),
+    user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
     app = await _load_owned_app(session, app_id, user)
@@ -353,7 +493,7 @@ async def get_app_endpoint(
 async def delete_app(
     app_id: str,
     request: Request,
-    user: User = Depends(current_user),
+    user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
     rdb = request.app.state.redis
@@ -434,7 +574,7 @@ async def run(
     app_id: str,
     payload: dict,
     request: Request,
-    user: User = Depends(current_user),
+    user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
     rdb = request.app.state.redis
@@ -448,7 +588,7 @@ async def stream(
     app_id: str,
     payload: dict,
     request: Request,
-    user: User = Depends(current_user),
+    user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
     rdb = request.app.state.redis
@@ -516,7 +656,7 @@ async def stream(
 async def get_result(
     request_id: str,
     request: Request,
-    user: User = Depends(current_user),
+    user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
     """Result lookup. Lazily mirrors completed Redis state into the requests
@@ -581,7 +721,7 @@ def _to_request_record(r: ReqRow) -> RequestRecord:
 @app.get("/requests/{request_id}", response_model=RequestRecord)
 async def get_request(
     request_id: str,
-    user: User = Depends(current_user),
+    user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
     row = await session.get(ReqRow, request_id)
@@ -595,7 +735,7 @@ async def get_request(
 @app.get("/apps/{app_id}/requests", response_model=list[RequestRecord])
 async def list_app_requests(
     app_id: str,
-    user: User = Depends(current_user),
+    user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
     limit: int = 50,
     status_filter: Optional[str] = None,
@@ -690,7 +830,7 @@ async def _openai_endpoint(
 async def openai_chat_completions(
     payload: dict,
     request: Request,
-    user: User = Depends(current_user),
+    user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
     return await _openai_endpoint(request, session, user, payload, "/v1/chat/completions")
@@ -700,7 +840,7 @@ async def openai_chat_completions(
 async def openai_completions(
     payload: dict,
     request: Request,
-    user: User = Depends(current_user),
+    user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
     return await _openai_endpoint(request, session, user, payload, "/v1/completions")
@@ -710,7 +850,7 @@ async def openai_completions(
 async def openai_embeddings(
     payload: dict,
     request: Request,
-    user: User = Depends(current_user),
+    user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
     payload.pop("stream", None)

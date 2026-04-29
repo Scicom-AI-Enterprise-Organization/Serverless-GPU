@@ -91,3 +91,21 @@ async def current_user(
         await revoke_session(rdb, token)
         raise HTTPException(status_code=401, detail={"error": "user no longer exists"})
     return user
+
+
+def _has_role(user: User, *roles: str) -> bool:
+    return user.role in roles or user.is_admin
+
+
+async def require_developer(user: User = Depends(current_user)) -> User:
+    """User must be at least developer (or admin). Plain 'user' role => 403."""
+    if not _has_role(user, "developer", "admin"):
+        raise HTTPException(status_code=403, detail={"error": "no platform access — ask an admin to grant developer role"})
+    return user
+
+
+async def require_admin(user: User = Depends(current_user)) -> User:
+    """Admin-only endpoints (role management, user list)."""
+    if not _has_role(user, "admin"):
+        raise HTTPException(status_code=403, detail={"error": "admin only"})
+    return user
