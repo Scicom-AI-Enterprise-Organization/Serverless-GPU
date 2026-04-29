@@ -14,6 +14,39 @@ spec:
   selector:
     {{- include "serverlessgpu.redis.selectorLabels" . | nindent 4 }}
   clusterIP: None  # headless for stable DNS
+{{- if .Values.redis.publicLoadBalancer.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "serverlessgpu.fullname" . }}-redis-public
+  labels:
+    {{- include "serverlessgpu.labels" . | nindent 4 }}
+    {{- include "serverlessgpu.redis.selectorLabels" . | nindent 4 }}
+  annotations:
+    {{- toYaml .Values.redis.publicLoadBalancer.annotations | nindent 4 }}
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 6379
+      targetPort: 6379
+      protocol: TCP
+      name: redis
+  selector:
+    {{- include "serverlessgpu.redis.selectorLabels" . | nindent 4 }}
+{{- end }}
+{{- if and .Values.redis.password (not .Values.externalSecrets) }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "serverlessgpu.fullname" . }}-redis-auth
+  labels:
+    {{- include "serverlessgpu.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  REDIS_PASSWORD: {{ .Values.redis.password | quote }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -36,7 +69,17 @@ spec:
       containers:
         - name: redis
           image: {{ .Values.redis.image }}
+          {{- if or .Values.redis.password .Values.externalSecrets }}
+          args: ["redis-server", "--appendonly", "yes", "--requirepass", "$(REDIS_PASSWORD)"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "serverlessgpu.fullname" . }}-redis-auth
+                  key: REDIS_PASSWORD
+          {{- else }}
           args: ["redis-server", "--appendonly", "yes"]
+          {{- end }}
           ports:
             - containerPort: 6379
           volumeMounts:
@@ -44,6 +87,18 @@ spec:
               mountPath: /data
           resources:
             {{- toYaml .Values.redis.resources | nindent 12 }}
+          {{- if or .Values.redis.password .Values.externalSecrets }}
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          {{- else }}
           readinessProbe:
             tcpSocket: { port: 6379 }
             initialDelaySeconds: 2
@@ -52,6 +107,7 @@ spec:
             tcpSocket: { port: 6379 }
             initialDelaySeconds: 10
             periodSeconds: 10
+          {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: data

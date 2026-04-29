@@ -45,10 +45,18 @@ gateway:
   # Affinity / anti-affinity to spread replicas across nodes.
   podAntiAffinity: true
 
+  # Override what URL the gateway tells workers to connect to for redis.
+  # If empty, uses the cluster-internal URL (with password if redis.password
+  # is set). Set this to a public hostname (e.g. via redis.publicLoadBalancer)
+  # when workers run outside the cluster (RunPod, bare-metal, etc.).
+  workerRedisUrl: ""
+
 ingress:
   enabled: true
   className: nginx
   host: api.serverlessgpu.example.com
+  # Optional second hostname routed at the web UI (when web.enabled).
+  webHost: ""
   tls:
     enabled: true
     # If using cert-manager, this annotation is enough; certificate auto-issues.
@@ -56,9 +64,62 @@ ingress:
   # Set true to add a CORS-friendly header for browser clients
   cors: false
 
+web:
+  enabled: false
+  replicaCount: 1
+  image:
+    registry: public.ecr.aws/o6x1g6b0
+    repository: aies/serverlessgpu-web
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  # If empty, derived from ingress.host (same as the gateway URL).
+  publicGatewayUrl: ""
+  # Optional RunPod API key the UI uses for direct read-only RunPod calls
+  # (worker status etc.). Set via --set; never commit.
+  runpodApiKey: ""
+  runpodNamePrefix: "serverlessgpu"
+  extraEnv: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  user: serverlessgpu
+  database: serverlessgpu
+  password: ""                   # required when enabled; set via --set or values override
+  storage:
+    size: 5Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
 redis:
   enabled: true
   image: redis:7-alpine
+  # If set, redis-server starts with --requirepass and gateway+workers use it
+  # in REDIS_URL. Required when publicLoadBalancer is enabled.
+  password: ""
+  # Expose redis via a dedicated AWS NLB. Public (internet-facing) so workers
+  # outside the VPC (RunPod, bare-metal) can connect with the password.
+  publicLoadBalancer:
+    enabled: false
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: "external"
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+      service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+      service.beta.kubernetes.io/aws-load-balancer-healthcheck-port: "6379"
+      service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: "TCP"
   storage:
     size: 5Gi
     storageClassName: ""         # default storage class
@@ -98,3 +159,23 @@ runpod:
 extraEnv: []
 # - name: LOG_LEVEL
 #   value: DEBUG
+
+# GitOps mode: when true, the chart skips rendering Secret resources for
+# postgres/redis/runpod/primeintellect/auth/web. You must provision matching
+# Secrets out-of-band (e.g. SealedSecrets in your ArgoCD repo) with these
+# names and keys:
+#   <fullname>-postgres-auth   -> POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+#   <fullname>-redis-auth      -> REDIS_PASSWORD
+#   <fullname>-runpod          -> RUNPOD_API_KEY [, TS_AUTHKEY]
+#   <fullname>-pi              -> PI_API_KEY
+#   <fullname>-auth            -> GATEWAY_API_KEYS
+#   <fullname>-web             -> RUNPOD_API_KEY
+# Where <fullname> is fullnameOverride or release name + chart name.
+externalSecrets: false
+
+# When externalSecrets is true and the gateway needs a worker-facing redis URL
+# different from the internal one (e.g. public NLB), set the host:port here.
+# The gateway constructs WORKER_REDIS_URL at runtime as
+#   redis://:$(REDIS_PASSWORD)@<host>:<port>
+# This avoids embedding the password in values.yaml. Default port 6379.
+gateway_workerRedisHost: ""

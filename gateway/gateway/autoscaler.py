@@ -1,14 +1,12 @@
 """Per-app autoscaler loop.
 
-Runs at 1Hz. For every registered app:
+Runs at 1Hz. For every registered app (loaded from Postgres):
   - sample queue length, in-flight tasks, current worker count
   - desired = ceil(queue_len / tasks_per_container), capped at max_containers
   - if desired > current: provider.provision()
   - if queue+inflight=0 AND idle > idle_timeout_s: terminate one worker (until 0)
 
 Worker liveness is tracked by Redis TTL on `worker:{machine_id}` keys.
-The autoscaler cleans up `worker_index:{app_id}` entries whose underlying
-key has expired (= worker died without unregistering).
 """
 from __future__ import annotations
 
@@ -20,22 +18,31 @@ import secrets
 import time
 from typing import TYPE_CHECKING
 
+from sqlalchemy import select
+
+from .db import App
+
 if TYPE_CHECKING:
     import redis.asyncio as redis_async
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
     from .provider import Provider
 
 logger = logging.getLogger("gateway.autoscaler")
 
 TICK_S = 1.0
-REGISTRATION_TOKEN_TTL_S = 300  # 5 min — pod must register within this window
+REGISTRATION_TOKEN_TTL_S = 1800  # 30 min — covers slow ECR pulls + vLLM model load
 
 
-async def autoscaler_loop(rdb: "redis_async.Redis", provider: "Provider") -> None:
+async def autoscaler_loop(
+    rdb: "redis_async.Redis",
+    provider: "Provider",
+    sm: "async_sessionmaker[AsyncSession]",
+) -> None:
     logger.info("autoscaler running")
     while True:
         try:
             await asyncio.sleep(TICK_S)
-            await tick(rdb, provider)
+            await tick(rdb, provider, sm)
         except asyncio.CancelledError:
             logger.info("autoscaler cancelled")
             raise
@@ -43,19 +50,21 @@ async def autoscaler_loop(rdb: "redis_async.Redis", provider: "Provider") -> Non
             logger.exception("autoscaler tick failed")
 
 
-async def tick(rdb: "redis_async.Redis", provider: "Provider") -> None:
-    app_ids = await rdb.smembers("apps:index")
-    for app_id in app_ids:
-        await _reconcile_app(rdb, provider, app_id)
+async def tick(
+    rdb: "redis_async.Redis",
+    provider: "Provider",
+    sm: "async_sessionmaker[AsyncSession]",
+) -> None:
+    async with sm() as session:
+        result = await session.execute(select(App))
+        apps = list(result.scalars().all())
+    for app in apps:
+        await _reconcile_app(rdb, provider, app)
 
 
-async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app_id: str) -> None:
-    app_blob = await rdb.get(f"app:{app_id}")
-    if app_blob is None:
-        await rdb.srem("apps:index", app_id)
-        return
-    app = json.loads(app_blob)
-    autoscaler_cfg = app["autoscaler"]
+async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: App) -> None:
+    app_id = app.app_id
+    autoscaler_cfg = app.autoscaler
     max_containers = int(autoscaler_cfg["max_containers"])
     tasks_per_container = int(autoscaler_cfg["tasks_per_container"])
     idle_timeout_s = int(autoscaler_cfg["idle_timeout_s"])
@@ -81,17 +90,14 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app_id:
             try:
                 machine_id = await provider.provision(
                     app_id=app_id,
-                    model=app["model"],
-                    gpu=app["gpu"],
+                    model=app.model,
+                    gpu=app.gpu,
                     env={"REGISTRATION_TOKEN": token},
                 )
                 _metrics.PROVISION_TOTAL.labels(provider=provider.name, ok="true").inc()
             except Exception:
                 _metrics.PROVISION_TOTAL.labels(provider=provider.name, ok="false").inc()
                 raise
-            # Store token AFTER provision so we have machine_id to scope it.
-            # Worker has 5 minutes to register or the token + provisioning
-            # state expire and the machine is GC'd by the reconciler.
             await rdb.set(
                 f"register_token:{machine_id}",
                 token,
@@ -106,12 +112,11 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app_id:
                     "status": "provisioning",
                     "last_seen": time.time(),
                 }),
-                ex=120,  # provisioning grace window
+                ex=REGISTRATION_TOKEN_TTL_S,
             )
             logger.info("scaled up %s: +1 worker (%s) → %d/%d", app_id, machine_id, current + 1, max_containers)
             current += 1
     elif desired < current and queue_len == 0 and idle_for >= idle_timeout_s:
-        # Idle scale-down: remove the oldest live worker.
         if workers:
             from . import metrics as _metrics
             victim = workers[0]
@@ -127,7 +132,6 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app_id:
 
 
 async def _live_workers(rdb: "redis_async.Redis", app_id: str) -> list[str]:
-    """Return machine_ids that have a live `worker:{id}` key. GC dead ones."""
     candidates = await rdb.smembers(f"worker_index:{app_id}")
     live: list[str] = []
     for mid in candidates:

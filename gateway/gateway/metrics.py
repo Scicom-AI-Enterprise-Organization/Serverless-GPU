@@ -75,8 +75,15 @@ TERMINATE_TOTAL = Counter(
 
 async def render(rdb: "redis_async.Redis") -> tuple[bytes, str]:
     """Sample point-in-time gauges from Redis, then serialize the registry."""
-    app_ids = await rdb.smembers("apps:index")
-    # Reset gauges so deleted apps don't keep stale values forever.
+    # Discover app_ids from existing worker_index/queue keys (Postgres is the
+    # source of truth for app metadata, but for metrics we just want anything
+    # with active state in Redis).
+    app_ids: set[str] = set()
+    async for key in rdb.scan_iter(match="worker_index:*"):
+        app_ids.add(key.split(":", 1)[1])
+    async for key in rdb.scan_iter(match="queue:*"):
+        app_ids.add(key.split(":", 1)[1])
+
     QUEUE_LENGTH.clear()
     WORKERS_TOTAL.clear()
     for app_id in app_ids:

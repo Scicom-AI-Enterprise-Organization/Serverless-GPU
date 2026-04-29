@@ -23,6 +23,9 @@ spec:
   tls:
     - hosts:
         - {{ .Values.ingress.host | quote }}
+        {{- if and .Values.web.enabled .Values.ingress.webHost }}
+        - {{ .Values.ingress.webHost | quote }}
+        {{- end }}
       secretName: {{ include "serverlessgpu.fullname" . }}-tls
   {{- end }}
   rules:
@@ -36,4 +39,16 @@ spec:
                 name: {{ include "serverlessgpu.fullname" . }}-gateway
                 port:
                   number: 80
+    {{- if and .Values.web.enabled .Values.ingress.webHost }}
+    - host: {{ .Values.ingress.webHost | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "serverlessgpu.fullname" . }}-web
+                port:
+                  number: 80
+    {{- end }}
 {{- end }}

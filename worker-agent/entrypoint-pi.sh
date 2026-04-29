@@ -39,9 +39,10 @@ fi
 VLLM_PORT="${VLLM_PORT:-8000}"
 VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:-}"
 
-echo "[entrypoint] starting vllm: model=$MODEL_ID port=$VLLM_PORT extra=$VLLM_EXTRA_ARGS"
+echo "[entrypoint] starting vllm: model=$MODEL_ID served-as=$APP_ID port=$VLLM_PORT extra=$VLLM_EXTRA_ARGS"
 python3 -m vllm.entrypoints.openai.api_server \
   --model "$MODEL_ID" \
+  --served-model-name "$APP_ID" \
   --port "$VLLM_PORT" \
   $VLLM_EXTRA_ARGS \
   &

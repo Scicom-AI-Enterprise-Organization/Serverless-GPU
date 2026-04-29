@@ -56,10 +56,54 @@ spec:
             - containerPort: 8080
               name: http
           env:
+            {{- $redisHost := printf "%s-redis" (include "serverlessgpu.fullname" .) }}
+            {{- if or .Values.redis.password .Values.externalSecrets }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "serverlessgpu.fullname" . }}-redis-auth
+                  key: REDIS_PASSWORD
+            {{- end }}
+            {{- /* Construct REDIS_URL. When a password is in use we lean on
+                  k8s $(VAR) interpolation so the password never gets baked
+                  into rendered manifests in plaintext. */}}
+            {{- if or .Values.redis.password .Values.externalSecrets }}
+            {{- $internalRedisUrl := printf "redis://:$(REDIS_PASSWORD)@%s:6379" $redisHost }}
             - name: REDIS_URL
-              value: "redis://{{ include "serverlessgpu.fullname" . }}-redis:6379"
+              value: {{ $internalRedisUrl | quote }}
+            {{- else }}
+            {{- $internalRedisUrl := printf "redis://%s:6379" $redisHost }}
+            - name: REDIS_URL
+              value: {{ $internalRedisUrl | quote }}
+            {{- end }}
+            {{- if .Values.postgres.enabled }}
+            {{- $pgHost := printf "%s-postgres" (include "serverlessgpu.fullname" .) }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "serverlessgpu.fullname" . }}-postgres-auth
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://{{ .Values.postgres.user }}:$(POSTGRES_PASSWORD)@{{ $pgHost }}:5432/{{ .Values.postgres.database }}"
+            {{- end }}
+            {{- /* WORKER_REDIS_URL — what workers (running off-cluster) dial.
+                  Precedence:
+                    1) gateway.workerRedisUrl (raw URL, takes priority)
+                    2) gateway_workerRedisHost (host:port, joined with $(REDIS_PASSWORD))
+                    3) fall back to internal redis URL (gateway-only mode) */}}
+            {{- if .Values.gateway.workerRedisUrl }}
             - name: WORKER_REDIS_URL
-              value: "redis://{{ include "serverlessgpu.fullname" . }}-redis:6379"
+              value: {{ .Values.gateway.workerRedisUrl | quote }}
+            {{- else if .Values.gateway_workerRedisHost }}
+            - name: WORKER_REDIS_URL
+              value: {{ printf "redis://:$(REDIS_PASSWORD)@%s" .Values.gateway_workerRedisHost | quote }}
+            {{- else if or .Values.redis.password .Values.externalSecrets }}
+            - name: WORKER_REDIS_URL
+              value: {{ printf "redis://:$(REDIS_PASSWORD)@%s:6379" $redisHost | quote }}
+            {{- else }}
+            - name: WORKER_REDIS_URL
+              value: {{ printf "redis://%s:6379" $redisHost | quote }}
+            {{- end }}
             - name: GATEWAY_BIND
               value: "0.0.0.0:8080"
             - name: AUTOSCALER

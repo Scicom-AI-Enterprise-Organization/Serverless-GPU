@@ -1,7 +1,25 @@
 volumes:
   redis-data:
+  postgres-data:
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: serverlessgpu
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: serverlessgpu
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U serverlessgpu -d serverlessgpu"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -24,8 +42,11 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql+asyncpg://serverlessgpu:devpassword@postgres:5432/serverlessgpu
       WORKER_REDIS_URL: redis://redis:6379
       GATEWAY_BIND: 0.0.0.0:8080
       LOG_LEVEL: INFO

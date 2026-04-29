@@ -84,7 +84,11 @@ jobs:
       ECR_REGISTRY: 865626945255.dkr.ecr.ap-southeast-5.amazonaws.com
       ECR_PUBLIC_ALIAS: o6x1g6b0                          # public.ecr.aws/<alias>; claim custom via Console
       GATEWAY_REPO: aies/serverlessgpu-gateway
+      WEB_REPO: aies/serverlessgpu-web
       WORKER_REPO: serverlessgpu-pi-worker                # public ECR repo name
+      # Public gateway URL baked into the web image at build time (NEXT_PUBLIC_*
+      # vars are inlined). Override via repo variable if the host changes.
+      PUBLIC_GATEWAY_URL: https://serverlessgpu.aies.scicom.dev
     steps:
       - uses: actions/checkout@v4
 
@@ -143,6 +147,22 @@ jobs:
             ${{ env.ECR_REGISTRY }}/${{ env.GATEWAY_REPO }}:latest
           cache-from: type=gha,scope=gateway
           cache-to: type=gha,scope=gateway,mode=max
+          provenance: false
+
+      - name: Build & maybe push web image (multi-arch)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./web
+          file: ./web/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.meta.outputs.push == 'true' }}
+          build-args: |
+            NEXT_PUBLIC_GATEWAY_URL=${{ env.PUBLIC_GATEWAY_URL }}
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.WEB_REPO }}:${{ steps.meta.outputs.sha_short }}
+            ${{ env.ECR_REGISTRY }}/${{ env.WEB_REPO }}:latest
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
           provenance: false
 
       - name: Build & maybe push PI worker image

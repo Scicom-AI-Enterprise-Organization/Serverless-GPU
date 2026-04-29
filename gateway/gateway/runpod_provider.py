@@ -36,17 +36,24 @@ logger = logging.getLogger("gateway.runpod_provider")
 # /v1/gputypes endpoint and are case-sensitive.
 _GPU_NAME_MAP = {
     "H100": "NVIDIA H100 80GB HBM3",
+    "H100-80GB": "NVIDIA H100 80GB HBM3",
     "A100": "NVIDIA A100 80GB PCIe",
+    "A100-80GB": "NVIDIA A100 80GB PCIe",
     "A100-40G": "NVIDIA A100-PCIE-40GB",
     "A10G": "NVIDIA A10",
     "A10": "NVIDIA A10",
+    "A10-24GB": "NVIDIA A10",
     "L40S": "NVIDIA L40S",
+    "L40S-48GB": "NVIDIA L40S",
+    "L40": "NVIDIA L40",
     "L4": "NVIDIA L4",
     "RTX4090": "NVIDIA GeForce RTX 4090",
     "RTX3090": "NVIDIA GeForce RTX 3090",
     "rtx3090": "NVIDIA GeForce RTX 3090",
     "rtx4090": "NVIDIA GeForce RTX 4090",
     "rtx3090ti": "NVIDIA GeForce RTX 3090 Ti",
+    "RTX-A6000": "NVIDIA RTX A6000",
+    "A6000": "NVIDIA RTX A6000",
 }
 
 
@@ -114,6 +121,14 @@ class RunPodProvider(Provider):
         self.ts_authkey = ts_authkey or os.environ.get("TS_AUTHKEY")
         self.name_prefix = name_prefix or os.environ.get("RUNPOD_NAME_PREFIX", "serverlessgpu")
 
+        # Filter for hosts with compatible CUDA drivers. The vllm/vllm-openai:latest
+        # base image needs CUDA 13+; older RunPod hosts will fail with
+        # "nvidia-container-cli: requirement error: unsatisfied condition: cuda>=13.0".
+        # Override via env (comma-separated, e.g. "12.4,12.8") if the worker image
+        # is rebuilt against an older CUDA.
+        cuda_env = os.environ.get("RUNPOD_ALLOWED_CUDA_VERSIONS", "13.0")
+        self.allowed_cuda_versions = [v.strip() for v in cuda_env.split(",") if v.strip()]
+
         self._client = client or httpx.AsyncClient(
             base_url=self.api_base,
             headers={
@@ -156,6 +171,8 @@ class RunPodProvider(Provider):
             "volumeInGb": self.volume_in_gb,
             "env": env_vars,
         }
+        if self.allowed_cuda_versions:
+            body["allowedCudaVersions"] = self.allowed_cuda_versions
 
         r = await self._client.post("/pods", json=body)
         if r.status_code >= 400:
