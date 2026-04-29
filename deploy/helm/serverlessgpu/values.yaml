@@ -159,3 +159,23 @@ runpod:
 extraEnv: []
 # - name: LOG_LEVEL
 #   value: DEBUG
+
+# GitOps mode: when true, the chart skips rendering Secret resources for
+# postgres/redis/runpod/primeintellect/auth/web. You must provision matching
+# Secrets out-of-band (e.g. SealedSecrets in your ArgoCD repo) with these
+# names and keys:
+#   <fullname>-postgres-auth   -> POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+#   <fullname>-redis-auth      -> REDIS_PASSWORD
+#   <fullname>-runpod          -> RUNPOD_API_KEY [, TS_AUTHKEY]
+#   <fullname>-pi              -> PI_API_KEY
+#   <fullname>-auth            -> GATEWAY_API_KEYS
+#   <fullname>-web             -> RUNPOD_API_KEY
+# Where <fullname> is fullnameOverride or release name + chart name.
+externalSecrets: false
+
+# When externalSecrets is true and the gateway needs a worker-facing redis URL
+# different from the internal one (e.g. public NLB), set the host:port here.
+# The gateway constructs WORKER_REDIS_URL at runtime as
+#   redis://:$(REDIS_PASSWORD)@<host>:<port>
+# This avoids embedding the password in values.yaml. Default port 6379.
+gateway_workerRedisHost: ""

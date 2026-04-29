@@ -59,11 +59,11 @@ spec:
               value: {{ $publicGw | quote }}
             - name: GATEWAY_URL_INTERNAL
               value: "http://{{ include "serverlessgpu.fullname" . }}-gateway"
-            {{- with .Values.web.runpodApiKey }}
+            {{- if or .Values.web.runpodApiKey .Values.externalSecrets }}
             - name: RUNPOD_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "serverlessgpu.fullname" $ }}-web
+                  name: {{ include "serverlessgpu.fullname" . }}-web
                   key: RUNPOD_API_KEY
             {{- end }}
             {{- with .Values.web.runpodNamePrefix }}
@@ -84,7 +84,7 @@ spec:
             failureThreshold: 6
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}
-{{- if .Values.web.runpodApiKey }}
+{{- if and .Values.web.runpodApiKey (not .Values.externalSecrets) }}
 ---
 apiVersion: v1
 kind: Secret

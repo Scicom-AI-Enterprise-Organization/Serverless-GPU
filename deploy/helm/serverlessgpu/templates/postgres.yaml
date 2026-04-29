@@ -14,6 +14,7 @@ spec:
   selector:
     {{- include "serverlessgpu.postgres.selectorLabels" . | nindent 4 }}
   clusterIP: None
+{{- if not .Values.externalSecrets }}
 ---
 apiVersion: v1
 kind: Secret
@@ -24,8 +25,9 @@ metadata:
 type: Opaque
 stringData:
   POSTGRES_USER: {{ .Values.postgres.user | quote }}
-  POSTGRES_PASSWORD: {{ required "postgres.password is required when postgres.enabled" .Values.postgres.password | quote }}
+  POSTGRES_PASSWORD: {{ required "postgres.password is required when postgres.enabled and externalSecrets=false" .Values.postgres.password | quote }}
   POSTGRES_DB: {{ .Values.postgres.database | quote }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: StatefulSet

@@ -35,7 +35,7 @@ spec:
   selector:
     {{- include "serverlessgpu.redis.selectorLabels" . | nindent 4 }}
 {{- end }}
-{{- if .Values.redis.password }}
+{{- if and .Values.redis.password (not .Values.externalSecrets) }}
 ---
 apiVersion: v1
 kind: Secret
@@ -69,7 +69,7 @@ spec:
       containers:
         - name: redis
           image: {{ .Values.redis.image }}
-          {{- if .Values.redis.password }}
+          {{- if or .Values.redis.password .Values.externalSecrets }}
           args: ["redis-server", "--appendonly", "yes", "--requirepass", "$(REDIS_PASSWORD)"]
           env:
             - name: REDIS_PASSWORD
@@ -87,7 +87,7 @@ spec:
               mountPath: /data
           resources:
             {{- toYaml .Values.redis.resources | nindent 12 }}
-          {{- if .Values.redis.password }}
+          {{- if or .Values.redis.password .Values.externalSecrets }}
           readinessProbe:
             exec:
               command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG"]
