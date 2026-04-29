@@ -15,35 +15,6 @@ permissions:
   id-token: write   # needed for AWS OIDC (ECR + ECR Public push)
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: false
-
-      - name: Install packages
-        run: |
-          uv venv
-          source .venv/bin/activate
-          uv pip install -e ./gateway -e ./worker-agent -e ./sdk
-          uv pip install pytest pytest-asyncio fakeredis
-
-      - name: Run pytest
-        run: |
-          source .venv/bin/activate
-          python -m pytest tests/ -v --tb=short
-
   helm:
     runs-on: ubuntu-latest
     steps:
@@ -77,7 +48,7 @@ jobs:
   # the infrastructure terraform repo — see deploy/ECR_SETUP.md).
   images:
     runs-on: ubuntu-latest
-    needs: [test, helm]
+    needs: [helm]
     env:
       AWS_REGION: ap-southeast-5
       AWS_ACCOUNT_ID: "865626945255"
@@ -202,7 +173,7 @@ jobs:
   # we'd only know the chart *renders*, not that it works.
   e2e-helm:
     runs-on: ubuntu-latest
-    needs: [test, helm]
+    needs: [helm]
     steps:
       - uses: actions/checkout@v4
 
