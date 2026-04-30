@@ -7,6 +7,14 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -401,6 +409,7 @@ function EngineArgsCard({ app }: { app: AppRecord }) {
   const [value, setValue] = useState(app.vllm_args ?? "");
   const [pending, startTransition] = useTransition();
   const [restarting, startRestart] = useTransition();
+  const [confirmRestart, setConfirmRestart] = useState(false);
 
   useEffect(() => {
     setValue(app.vllm_args ?? "");
@@ -426,9 +435,6 @@ function EngineArgsCard({ app }: { app: AppRecord }) {
   }
 
   function restart() {
-    if (!confirm("Drain all running workers? In-flight requests finish; new ones spawn with the latest config.")) {
-      return;
-    }
     startRestart(async () => {
       const res = await restartEndpoint(app.app_id);
       if (!res.ok) {
@@ -440,6 +446,7 @@ function EngineArgsCard({ app }: { app: AppRecord }) {
       } else {
         toast.success(`Draining ${res.drained} worker${res.drained === 1 ? "" : "s"} — autoscaler will respawn.`);
       }
+      setConfirmRestart(false);
       router.refresh();
     });
   }
@@ -451,6 +458,27 @@ function EngineArgsCard({ app }: { app: AppRecord }) {
 
   const display = (app.vllm_args ?? "").trim();
   return (
+    <>
+    <Dialog open={confirmRestart} onOpenChange={(open) => !restarting && setConfirmRestart(open)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Restart workers?</DialogTitle>
+          <DialogDescription>
+            All running workers for this endpoint will be drained. In-flight requests
+            finish; new ones spawn with the latest config.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setConfirmRestart(false)} disabled={restarting}>
+            Cancel
+          </Button>
+          <Button onClick={restart} disabled={restarting}>
+            {restarting && <Loader2 className="h-4 w-4 animate-spin" />}
+            Restart workers
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
     <Card>
       <CardHeader className="flex-row items-center justify-between gap-2">
         <div className="flex flex-col gap-0.5">
@@ -465,7 +493,7 @@ function EngineArgsCard({ app }: { app: AppRecord }) {
             <Button
               variant="outline"
               size="xs"
-              onClick={restart}
+              onClick={() => setConfirmRestart(true)}
               disabled={restarting}
               title="Drain workers so the next cold start picks up the latest config"
             >
@@ -529,6 +557,7 @@ function EngineArgsCard({ app }: { app: AppRecord }) {
         )}
       </CardContent>
     </Card>
+    </>
   );
 }
 
