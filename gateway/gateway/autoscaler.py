@@ -74,10 +74,17 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
     workers = await _live_workers(rdb, app_id)
     current = len(workers)
 
+    # idle_timeout_s == 0 also means "always-on": keep at least one worker
+    # warm so the first request doesn't pay cold-start, and respawn if the
+    # worker dies.
+    always_on = idle_timeout_s == 0
     if queue_len == 0:
-        desired = 0
+        desired = 1 if always_on else 0
     else:
-        desired = min(max_containers, math.ceil(queue_len / tasks_per_container))
+        desired = math.ceil(queue_len / tasks_per_container)
+        if always_on:
+            desired = max(desired, 1)
+    desired = min(max_containers, desired)
 
     last_request_blob = await rdb.get(f"app:{app_id}:last_request_ts")
     last_request_ts = float(last_request_blob) if last_request_blob else 0.0
