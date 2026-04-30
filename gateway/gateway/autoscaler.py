@@ -116,7 +116,7 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
             )
             logger.info("scaled up %s: +1 worker (%s) → %d/%d", app_id, machine_id, current + 1, max_containers)
             current += 1
-    elif idle_timeout_s > 0 and desired < current and queue_len == 0 and idle_for >= idle_timeout_s:
+    elif desired < current and queue_len == 0 and idle_for >= idle_timeout_s:
         if workers:
             from . import metrics as _metrics
             victim = workers[0]

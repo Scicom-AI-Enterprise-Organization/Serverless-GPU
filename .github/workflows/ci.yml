@@ -24,6 +24,7 @@ jobs:
       gateway: ${{ steps.filter.outputs.gateway }}
       web: ${{ steps.filter.outputs.web }}
       worker: ${{ steps.filter.outputs.worker }}
+      inference: ${{ steps.filter.outputs.inference }}
       helm: ${{ steps.filter.outputs.helm }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
@@ -42,6 +43,10 @@ jobs:
               - '.github/workflows/**'
             worker:
               - 'worker-agent/**'
+              - '.github/workflows/**'
+            inference:
+              - 'worker-agent/Dockerfile.inference'
+              - 'worker-agent/entrypoint-inference.sh'
               - '.github/workflows/**'
             helm:
               - 'deploy/helm/**'
@@ -84,7 +89,8 @@ jobs:
     if: |
       needs.changes.outputs.gateway == 'true' ||
       needs.changes.outputs.web == 'true' ||
-      needs.changes.outputs.worker == 'true'
+      needs.changes.outputs.worker == 'true' ||
+      needs.changes.outputs.inference == 'true'
     env:
       AWS_REGION: ap-southeast-5
       AWS_ACCOUNT_ID: "865626945255"
@@ -94,6 +100,7 @@ jobs:
       GATEWAY_REPO: aies/serverlessgpu-gateway-ecr
       WEB_REPO: aies/serverlessgpu-web-ecr
       WORKER_REPO: serverlessgpu-pi-worker                # public ECR repo name
+      INFERENCE_REPO: serverlessgpu-inference-agent       # public ECR repo for inference (vLLM-based)
       # Public gateway URL baked into the web image at build time (NEXT_PUBLIC_*
       # vars are inlined). Override via repo variable if the host changes.
       PUBLIC_GATEWAY_URL: https://serverlessgpu.aies.scicom.dev
@@ -194,6 +201,23 @@ jobs:
             public.ecr.aws/${{ env.ECR_PUBLIC_ALIAS }}/${{ env.WORKER_REPO }}:latest
           cache-from: type=gha,scope=pi-worker
           cache-to: type=gha,scope=pi-worker,mode=max
+          provenance: false
+
+      - name: Build & maybe push inference agent image
+        if: needs.changes.outputs.inference == 'true'
+        # Inference feature: vLLM-wrapped agent. PI bare-metal hosts pull
+        # this without AWS auth, amd64-only (vLLM is x86 GPU-only).
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./worker-agent/Dockerfile.inference
+          platforms: linux/amd64
+          push: ${{ steps.meta.outputs.push == 'true' }}
+          tags: |
+            public.ecr.aws/${{ env.ECR_PUBLIC_ALIAS }}/${{ env.INFERENCE_REPO }}:${{ steps.meta.outputs.sha_short }}
+            public.ecr.aws/${{ env.ECR_PUBLIC_ALIAS }}/${{ env.INFERENCE_REPO }}:latest
+          cache-from: type=gha,scope=inference-agent
+          cache-to: type=gha,scope=inference-agent,mode=max
           provenance: false
 
       # Local dev fake-worker image (used by docker-compose). Never pushed —
