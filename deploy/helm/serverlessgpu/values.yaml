@@ -160,6 +160,15 @@ extraEnv: []
 # - name: LOG_LEVEL
 #   value: DEBUG
 
+# Metrics scraping. The gateway always serves /metrics; this toggle just
+# emits a ServiceMonitor so Grafana Alloy / kube-prometheus-stack can find
+# it. Requires the monitoring.coreos.com CRDs (prometheus-operator-style).
+metrics:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+
 # GitOps mode: when true, the chart skips rendering Secret resources for
 # postgres/redis/runpod/primeintellect/auth/web. You must provision matching
 # Secrets out-of-band (e.g. SealedSecrets in your ArgoCD repo) with these
