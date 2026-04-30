@@ -180,12 +180,10 @@ async def lifespan(app: FastAPI):
     app.state.provider = None
     app.state.autoscaler_task = None
     app.state.reconciler_task = None
-    app.state.inference_reconciler_task = None
     if os.environ.get("AUTOSCALER", "0") == "1":
         from .provider import build_provider
         from .autoscaler import autoscaler_loop
         from .reconciler import reconciler_loop
-        from .inference_reconciler import inference_reconciler_loop
 
         provider_name = os.environ.get("PROVIDER", "fake")
 
@@ -220,15 +218,12 @@ async def lifespan(app: FastAPI):
         app.state.reconciler_task = asyncio.create_task(
             reconciler_loop(app.state.redis, app.state.provider)
         )
-        app.state.inference_reconciler_task = asyncio.create_task(
-            inference_reconciler_loop(session_factory(), app.state.provider)
-        )
-        logger.info("autoscaler + reconciler + inference reconciler enabled (provider=%s)", app.state.provider.name)
+        logger.info("autoscaler + reconciler enabled (provider=%s)", app.state.provider.name)
 
     try:
         yield
     finally:
-        for task_attr in ("autoscaler_task", "reconciler_task", "inference_reconciler_task"):
+        for task_attr in ("autoscaler_task", "reconciler_task"):
             t = getattr(app.state, task_attr, None)
             if t:
                 t.cancel()
@@ -800,22 +795,17 @@ async def list_app_requests(
     return [_to_request_record(r) for r in result.scalars().all()]
 
 
-async def _openai_endpoint(
+async def _openai_endpoint_after_admit(
     request: Request,
-    db_session: AsyncSession,
-    user: User,
-    payload: dict,
-    vllm_path: str,
+    request_id: str,
+    is_stream: bool,
 ):
-    rdb = request.app.state.redis
-    app_id = payload.get("model")
-    if not app_id:
-        raise HTTPException(status_code=400, detail={"error": "missing 'model' field in request body"})
+    """Block on the result for a previously-admitted request.
 
-    is_stream = bool(payload.get("stream"))
-    request_id, _timeout_s = await _admit_and_enqueue(
-        rdb, db_session, app_id, user, payload, stream=is_stream, endpoint=vllm_path
-    )
+    Factored out of `_openai_endpoint` so /inference can call _admit_and_enqueue
+    against a hidden App id and then reuse this wait/stream loop unchanged.
+    """
+    rdb = request.app.state.redis
 
     if not is_stream:
         deadline = time.time() + 60
@@ -874,6 +864,25 @@ async def _openai_endpoint(
             "X-Request-Id": request_id,
         },
     )
+
+
+async def _openai_endpoint(
+    request: Request,
+    db_session: AsyncSession,
+    user: User,
+    payload: dict,
+    vllm_path: str,
+):
+    rdb = request.app.state.redis
+    app_id = payload.get("model")
+    if not app_id:
+        raise HTTPException(status_code=400, detail={"error": "missing 'model' field in request body"})
+
+    is_stream = bool(payload.get("stream"))
+    request_id, _timeout_s = await _admit_and_enqueue(
+        rdb, db_session, app_id, user, payload, stream=is_stream, endpoint=vllm_path
+    )
+    return await _openai_endpoint_after_admit(request, request_id, is_stream)
 
 
 @app.post("/v1/chat/completions")

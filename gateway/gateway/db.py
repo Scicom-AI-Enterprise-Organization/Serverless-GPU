@@ -78,10 +78,12 @@ class Request(Base):
 
 
 class Model(Base):
-    """An Inference endpoint backed by a single vLLM worker on PI bare metal.
+    """An Inference endpoint backed by a queue-based App on PI bare metal.
 
-    Distinct from App (which is the Serverless feature). Scale-to-zero only:
-    no min replicas knob — `idle_timeout_s` drives teardown.
+    Each Model row is paired with a hidden App row (`app_id`) that drives the
+    same autoscaler / queue / worker machinery as the Serverless feature.
+    Inference just hides the App from the user behind a tier_label and an
+    HF repo. Scale-to-zero is via `App.autoscaler.idle_timeout_s`.
     """
     __tablename__ = "models"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -92,10 +94,16 @@ class Model(Base):
     gpu_type: Mapped[str] = mapped_column(String(32))           # internal — never returned to non-admin
     tier_label: Mapped[str] = mapped_column(String(32))         # user-visible tier (e.g. "consumer-24gb")
     idle_timeout_s: Mapped[int] = mapped_column(Integer, default=300)
+    # The hidden App that drives queueing / autoscaling for this endpoint.
+    app_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("apps.app_id", ondelete="SET NULL"), nullable=True
+    )
+    # Legacy direct-bootstrap columns — kept for back-compat ALTER survival,
+    # ignored by the queue-based architecture. New rows leave them NULL/idle.
     network_volume_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     active_machine_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     active_endpoint: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    state: Mapped[str] = mapped_column(String(16), default="idle", index=True)  # idle|cold-starting|ready|error|terminating
+    state: Mapped[str] = mapped_column(String(16), default="idle", index=True)
     last_request_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -182,6 +190,26 @@ async def init_db() -> None:
             EXCEPTION WHEN undefined_table THEN
               -- models table not yet created (race on first boot); create_all
               -- above will have already produced it, so this branch is rare.
+              NULL;
+            END $$;
+        """))
+        # Inference queue rework: each Model now has a hidden App driving
+        # its autoscaler/queue. Add the FK column on existing installs.
+        await conn.execute(text(
+            "ALTER TABLE models ADD COLUMN IF NOT EXISTS app_id VARCHAR(64)"
+        ))
+        await conn.execute(text("""
+            DO $$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM information_schema.table_constraints
+                WHERE table_name='models' AND constraint_name='models_app_id_fkey'
+              ) THEN
+                ALTER TABLE models
+                  ADD CONSTRAINT models_app_id_fkey
+                  FOREIGN KEY (app_id) REFERENCES apps(app_id) ON DELETE SET NULL;
+              END IF;
+            EXCEPTION WHEN undefined_table THEN
               NULL;
             END $$;
         """))
