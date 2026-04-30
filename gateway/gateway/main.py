@@ -786,19 +786,57 @@ async def get_request(
 @app.get("/apps/{app_id}/requests", response_model=list[RequestRecord])
 async def list_app_requests(
     app_id: str,
+    request: Request,
     user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
     limit: int = 50,
     status_filter: Optional[str] = None,
 ):
-    """Recent requests for an app, newest first. Owner-scoped (admin sees all)."""
+    """Recent requests for an app, newest first. Owner-scoped (admin sees all).
+    Reconciles any still-queued/pending rows against Redis on the way out, so
+    rows that completed without ever being polled don't appear stuck."""
     await _load_owned_app(session, app_id, user)
     from sqlalchemy import select, desc
     stmt = select(ReqRow).where(ReqRow.app_id == app_id).order_by(desc(ReqRow.created_at)).limit(min(limit, 200))
     if status_filter:
         stmt = stmt.where(ReqRow.status == status_filter)
     result = await session.execute(stmt)
-    return [_to_request_record(r) for r in result.scalars().all()]
+    rows = list(result.scalars().all())
+
+    rdb = request.app.state.redis
+    for r in rows:
+        if r.status not in ("queued", "pending"):
+            continue
+        blob = await rdb.get(f"result:{r.request_id}")
+        if not blob:
+            continue
+        raw = json.loads(blob)
+        rstatus = raw.get("status")
+        if rstatus and rstatus != "pending" and rstatus != r.status:
+            await _mirror_status_to_db(session, r.request_id, rstatus, raw.get("output"))
+            r.status = rstatus
+            r.output = raw.get("output")
+
+    return [_to_request_record(r) for r in rows]
+
+
+async def _mirror_status_to_db(
+    session: AsyncSession, request_id: str, status: str, output: Any
+) -> None:
+    """Reflect a terminal Redis result back into the requests table so the
+    request-history UI shows it as completed/failed instead of stuck queued.
+    Workers write only to Redis; without this, postgres never sees the update."""
+    row = await session.get(ReqRow, request_id)
+    if row is None:
+        return
+    if row.status == status and row.output == output:
+        return
+    row.status = status
+    row.output = output
+    if row.completed_at is None and status != "pending":
+        from datetime import datetime, timezone
+        row.completed_at = datetime.now(timezone.utc)
+    await session.commit()
 
 
 async def _openai_endpoint(
@@ -824,11 +862,20 @@ async def _openai_endpoint(
             blob = await rdb.get(f"result:{request_id}")
             if blob:
                 raw = json.loads(blob)
-                if raw.get("status") == "completed":
+                status = raw.get("status")
+                if status == "completed":
+                    await _mirror_status_to_db(db_session, request_id, "completed", raw.get("output"))
                     return raw.get("output", {})
-                if raw.get("status") in ("timeout", "cancelled"):
+                if status in ("timeout", "cancelled", "failed"):
+                    await _mirror_status_to_db(db_session, request_id, status, raw.get("output"))
                     raise HTTPException(status_code=504, detail=raw.get("output"))
             await asyncio.sleep(0.2)
+        await _mirror_status_to_db(
+            db_session,
+            request_id,
+            "timeout",
+            {"error": "no completion in 60s — worker probably cold-starting"},
+        )
         raise HTTPException(
             status_code=504,
             detail={
