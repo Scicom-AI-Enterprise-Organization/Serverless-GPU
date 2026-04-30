@@ -5,6 +5,7 @@ Runs at 1Hz. For every registered app (loaded from Postgres):
   - desired = ceil(queue_len / tasks_per_container), capped at max_containers
   - if desired > current: provider.provision()
   - if queue+inflight=0 AND idle > idle_timeout_s: terminate one worker (until 0)
+  - idle_timeout_s == 0 disables teardown entirely (always-on)
 
 Worker liveness is tracked by Redis TTL on `worker:{machine_id}` keys.
 """
@@ -116,7 +117,7 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
             )
             logger.info("scaled up %s: +1 worker (%s) → %d/%d", app_id, machine_id, current + 1, max_containers)
             current += 1
-    elif desired < current and queue_len == 0 and idle_for >= idle_timeout_s:
+    elif idle_timeout_s > 0 and desired < current and queue_len == 0 and idle_for >= idle_timeout_s:
         if workers:
             from . import metrics as _metrics
             victim = workers[0]
