@@ -40,7 +40,7 @@ spec:
       {{- end }}
       containers:
         - name: web
-          image: "{{ .Values.web.image.registry }}/{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          image: {{ .Values.web.image.spec | default (printf "%s/%s:%s" .Values.web.image.registry .Values.web.image.repository .Values.web.image.tag) | quote }}
           imagePullPolicy: {{ .Values.web.image.pullPolicy }}
           ports:
             - containerPort: 3000
