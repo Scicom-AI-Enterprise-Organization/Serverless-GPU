@@ -33,7 +33,7 @@ export default async function OrganizationPage() {
           <h1 className="text-2xl font-semibold tracking-tight">Organization</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Manage members and role assignments. Admins manage roles; developers
-            can use Serverless and the Hub; users have no platform access until
+            can deploy inference endpoints; users have no platform access until
             promoted.
           </p>
         </header>

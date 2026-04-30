@@ -2,7 +2,7 @@ import { ConsoleTopbar } from "@/components/console/topbar";
 import { NoAccessAlert } from "@/components/no-access-alert";
 import { currentUsername } from "@/lib/current-user";
 import { getMe } from "@/lib/me";
-import { HubCatalog } from "./hub-catalog";
+import { InferenceForm } from "./inference-form";
 
 export default async function NewEndpointPage() {
   const [me, username] = await Promise.all([getMe(), currentUsername()]);
@@ -11,13 +11,13 @@ export default async function NewEndpointPage() {
     <div className="flex h-full flex-col">
       <ConsoleTopbar
         crumbs={[
-          { label: "Serverless", href: "/serverless" },
-          { label: "Deploy Serverless endpoint" },
+          { label: "Inference", href: "/serverless" },
+          { label: "New endpoint" },
         ]}
         username={username}
       />
       <div className="flex-1 overflow-y-auto px-6 py-6 lg:px-10 lg:py-8 scrollbar-thin">
-        {noAccess ? <NoAccessAlert /> : <HubCatalog />}
+        {noAccess ? <NoAccessAlert /> : <InferenceForm />}
       </div>
     </div>
   );

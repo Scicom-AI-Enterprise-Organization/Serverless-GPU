@@ -36,12 +36,12 @@ export function EndpointGrid({ apps }: { apps: AppRecord[] }) {
         </div>
         <h2 className="mt-4 text-base font-medium">No endpoints yet</h2>
         <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-          Pick a worker from the Hub to spin up your first endpoint.
+          Spin up your first inference endpoint.
         </p>
         <Button asChild className="mt-6">
           <Link href="/serverless/new">
             <Plus className="h-4 w-4" />
-            Deploy from the Hub
+            New endpoint
           </Link>
         </Button>
       </div>

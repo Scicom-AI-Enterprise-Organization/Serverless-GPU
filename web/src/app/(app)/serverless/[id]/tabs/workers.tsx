@@ -88,12 +88,24 @@ export function WorkersTab({ app }: { app: AppRecord }) {
   }, [fetchLive]);
 
   const rows = useMemo(() => {
-    const liveIds = new Set((live ?? []).map((w) => w.machine_id));
+    // Until the first fetch lands, we don't actually know which cached
+    // workers are still alive — show them with their last-known status
+    // instead of flashing "terminated" before the real data arrives.
+    if (live === null) {
+      const order: WorkerStatus[] = ["running", "initializing", "terminating", "unknown", "terminated"];
+      return [...remembered].sort((a, b) => {
+        const oa = order.indexOf(a.status);
+        const ob = order.indexOf(b.status);
+        if (oa !== ob) return oa - ob;
+        return (b.created_at ?? "").localeCompare(a.created_at ?? "");
+      });
+    }
+    const liveIds = new Set(live.map((w) => w.machine_id));
     const ghosts: WorkerRow[] = remembered
       .filter((w) => !liveIds.has(w.machine_id))
       .map((w) => ({ ...w, status: "terminated" as const, raw_status: "terminated" }));
     const order: WorkerStatus[] = ["running", "initializing", "terminating", "unknown", "terminated"];
-    const all = [...(live ?? []), ...ghosts];
+    const all = [...live, ...ghosts];
     return all.sort((a, b) => {
       const oa = order.indexOf(a.status);
       const ob = order.indexOf(b.status);
@@ -111,7 +123,7 @@ export function WorkersTab({ app }: { app: AppRecord }) {
     setRemembered([]);
   }
 
-  const liveCount = live?.length ?? 0;
+  const liveCount = live === null ? "—" : live.length;
   const terminatedCount = rows.filter((r) => r.status === "terminated").length;
 
   return (
@@ -184,10 +196,10 @@ function WorkerRow({ w }: { w: WorkerRow }) {
   return (
     <>
       <tr className={cn("border-b border-border/60 last:border-b-0", w.status === "terminated" && "opacity-60")}>
-        <td className="px-2 py-2 align-top">
+        <td className="px-2 py-3 align-middle">
           <button
             onClick={() => setOpen((v) => !v)}
-            className="text-muted-foreground hover:text-foreground"
+            className="flex items-center justify-center text-muted-foreground hover:text-foreground"
             aria-label={open ? "Hide logs" : "Show logs"}
           >
             {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}

@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { ChevronRight, LogIn, PanelLeft } from "lucide-react";
+import { ChevronRight, LogIn, Menu, PanelLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "./theme-toggle";
 import { UserMenu } from "./user-menu";
+import { useSidebarState } from "./sidebar-state";
 
 export type Crumb = { label: string; href?: string };
 
@@ -15,32 +16,43 @@ export function ConsoleTopbar({
   crumbs?: Crumb[];
   username?: string;
 }) {
+  const { togglePanel } = useSidebarState();
+  // Trim breadcrumbs on phones so the header doesn't wrap.
+  const lastCrumb = crumbs[crumbs.length - 1];
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-sidebar px-3 lg:px-4">
-      <div className="flex items-center gap-2">
+    <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-sidebar px-3 lg:px-4">
+      <div className="flex min-w-0 items-center gap-2">
         <button
-          className="hidden rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground md:inline-flex"
+          type="button"
+          onClick={togglePanel}
+          className="inline-flex shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
           aria-label="Toggle sidebar"
         >
-          <PanelLeft className="h-4 w-4" />
+          <PanelLeft className="hidden h-4 w-4 md:block" />
+          <Menu className="h-4 w-4 md:hidden" />
         </button>
-        <nav className="ml-2 hidden items-center gap-1 text-sm md:flex">
+        <nav className="ml-2 hidden min-w-0 items-center gap-1 text-sm md:flex">
           {crumbs.map((c, i) => (
-            <span key={i} className="flex items-center gap-1 text-muted-foreground">
+            <span key={i} className="flex items-center gap-1 truncate text-muted-foreground">
               {i > 0 && <ChevronRight className="h-3.5 w-3.5" />}
               {c.href ? (
-                <Link href={c.href} className="hover:text-foreground">
+                <Link href={c.href} className="truncate hover:text-foreground">
                   {c.label}
                 </Link>
               ) : (
-                <span className="text-foreground">{c.label}</span>
+                <span className="truncate text-foreground">{c.label}</span>
               )}
             </span>
           ))}
         </nav>
+        {lastCrumb && (
+          <span className="ml-1 truncate text-sm text-foreground md:hidden">
+            {lastCrumb.label}
+          </span>
+        )}
       </div>
 
-      <div className="flex items-center gap-1">
+      <div className="flex shrink-0 items-center gap-1">
         <ThemeToggle />
         {username ? (
           <UserMenu username={username} />

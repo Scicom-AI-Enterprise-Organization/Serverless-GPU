@@ -237,7 +237,7 @@ function DetailCard({ app }: { app: AppRecord }) {
           })}
         />
         <Row
-          label="Hub listing"
+          label="Framework"
           value={
             <span className="inline-flex items-center gap-1.5">
               <span className="flex h-5 w-5 items-center justify-center rounded bg-violet-500/20 text-[10px] font-semibold text-violet-300">
@@ -266,20 +266,35 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 function ScaleStrategyCard({ app }: { app: AppRecord }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
-  const [maxWorkers, setMaxWorkers] = useState(app.autoscaler.max_containers);
-  const [idleTimeoutS, setIdleTimeoutS] = useState(app.autoscaler.idle_timeout_s);
+  const [maxInput, setMaxInput] = useState(String(app.autoscaler.max_containers));
+  const [idleInput, setIdleInput] = useState(String(app.autoscaler.idle_timeout_s));
   const [pending, startTransition] = useTransition();
 
   useEffect(() => {
-    setMaxWorkers(app.autoscaler.max_containers);
-    setIdleTimeoutS(app.autoscaler.idle_timeout_s);
+    setMaxInput(String(app.autoscaler.max_containers));
+    setIdleInput(String(app.autoscaler.idle_timeout_s));
   }, [app.autoscaler.max_containers, app.autoscaler.idle_timeout_s]);
 
+  const parsedMax = Number.parseInt(maxInput, 10);
+  const parsedIdle = Number.parseInt(idleInput, 10);
+  const maxInvalid =
+    !/^\d+$/.test(maxInput.trim()) || !Number.isFinite(parsedMax) || parsedMax < 1 || parsedMax > 20;
+  const idleInvalid =
+    !/^\d+$/.test(idleInput.trim()) || !Number.isFinite(parsedIdle) || parsedIdle < 0 || parsedIdle > 86400;
+
   function save() {
+    if (maxInvalid) {
+      toast.error("Max workers must be an integer between 1 and 20.");
+      return;
+    }
+    if (idleInvalid) {
+      toast.error("Idle timeout must be an integer 0–86400 seconds (0 = always-on).");
+      return;
+    }
     startTransition(async () => {
       const res = await updateAutoscaler(app.app_id, {
-        max_containers: maxWorkers,
-        idle_timeout_s: idleTimeoutS,
+        max_containers: parsedMax,
+        idle_timeout_s: parsedIdle,
       });
       if (!res.ok) {
         toast.error(res.error);
@@ -292,8 +307,8 @@ function ScaleStrategyCard({ app }: { app: AppRecord }) {
   }
 
   function cancel() {
-    setMaxWorkers(app.autoscaler.max_containers);
-    setIdleTimeoutS(app.autoscaler.idle_timeout_s);
+    setMaxInput(String(app.autoscaler.max_containers));
+    setIdleInput(String(app.autoscaler.idle_timeout_s));
     setEditing(false);
   }
 
@@ -311,7 +326,11 @@ function ScaleStrategyCard({ app }: { app: AppRecord }) {
             <Button variant="ghost" size="xs" onClick={cancel} disabled={pending}>
               Cancel
             </Button>
-            <Button size="xs" onClick={save} disabled={pending}>
+            <Button
+              size="xs"
+              onClick={save}
+              disabled={pending || maxInvalid || idleInvalid}
+            >
               {pending && <Loader2 className="h-3 w-3 animate-spin" />}
               Save
             </Button>
@@ -324,22 +343,24 @@ function ScaleStrategyCard({ app }: { app: AppRecord }) {
           <>
             <EditRow label="Max workers">
               <Input
-                type="number"
-                min={1}
-                max={20}
-                value={maxWorkers}
-                onChange={(e) => setMaxWorkers(Math.max(1, Number(e.target.value)))}
+                type="text"
+                inputMode="numeric"
+                value={maxInput}
+                onChange={(e) => setMaxInput(e.target.value)}
+                placeholder="1–20"
+                aria-invalid={maxInvalid}
                 className="h-8 w-24 text-right font-mono"
                 disabled={pending}
               />
             </EditRow>
             <EditRow label="Idle timeout (s)">
               <Input
-                type="number"
-                min={0}
-                max={86400}
-                value={idleTimeoutS}
-                onChange={(e) => setIdleTimeoutS(Math.max(0, Number(e.target.value)))}
+                type="text"
+                inputMode="numeric"
+                value={idleInput}
+                onChange={(e) => setIdleInput(e.target.value)}
+                placeholder="0 = always-on"
+                aria-invalid={idleInvalid}
                 className="h-8 w-24 text-right font-mono"
                 disabled={pending}
               />

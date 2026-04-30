@@ -3,95 +3,197 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Boxes, KeyRound, Layers, Users } from "lucide-react";
+import { Boxes, KeyRound, Lock, Sparkles, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSidebarState } from "./sidebar-state";
 
-type Item = { label: string; href: string; icon: React.ElementType };
+type Item = {
+  label: string;
+  href: string;
+  icon: React.ElementType;
+  locked?: boolean;
+};
 
 const RESOURCES: Item[] = [
-  { label: "Serverless", href: "/serverless", icon: Boxes },
-  { label: "All workers", href: "/serverless/new", icon: Layers },
+  { label: "Inference", href: "/serverless", icon: Boxes },
+  { label: "Autotrain", href: "#", icon: Sparkles, locked: true },
 ];
 const ACCOUNT: Item[] = [{ label: "API keys", href: "/api-keys", icon: KeyRound }];
 const ADMIN: Item[] = [{ label: "Organization", href: "/organization", icon: Users }];
 
 export function ConsoleSidebar({ isAdmin = false }: { isAdmin?: boolean } = {}) {
   const pathname = usePathname();
+  const { collapsed, mobileOpen, closeMobile } = useSidebarState();
 
   const isActive = (href: string) => {
     if (href !== "/serverless") return pathname === href;
-    return pathname === "/serverless" || /^\/serverless\/(?!new$)/.test(pathname);
+    return pathname === "/serverless" || pathname.startsWith("/serverless/");
   };
 
-  return (
-    <aside className="hidden h-full w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
-      <Link
-        href="/"
-        className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4 hover:bg-sidebar-accent/40"
-      >
-        <Image
-          src="/logos/scicom-logo.png"
-          alt="Scicom"
-          width={96}
-          height={24}
-          priority
-          className="h-6 w-auto select-none"
-        />
-        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Serverless
-        </span>
-      </Link>
+  const groups = (
+    <>
+      <SidebarGroup label="Resources" collapsed={collapsed}>
+        {RESOURCES.map((item) => (
+          <SidebarItem
+            key={item.label}
+            item={item}
+            active={isActive(item.href)}
+            collapsed={collapsed}
+            onNavigate={closeMobile}
+          />
+        ))}
+      </SidebarGroup>
 
-      <nav className="flex-1 overflow-y-auto py-3 scrollbar-thin">
-        <SidebarGroup label="Resources">
-          {RESOURCES.map((item) => (
-            <SidebarItem key={item.label} item={item} active={isActive(item.href)} />
+      <SidebarGroup label="Account" collapsed={collapsed}>
+        {ACCOUNT.map((item) => (
+          <SidebarItem
+            key={item.label}
+            item={item}
+            active={isActive(item.href)}
+            collapsed={collapsed}
+            onNavigate={closeMobile}
+          />
+        ))}
+      </SidebarGroup>
+
+      {isAdmin && (
+        <SidebarGroup label="Admin" collapsed={collapsed}>
+          {ADMIN.map((item) => (
+            <SidebarItem
+              key={item.label}
+              item={item}
+              active={isActive(item.href)}
+              collapsed={collapsed}
+              onNavigate={closeMobile}
+            />
           ))}
         </SidebarGroup>
-
-        <SidebarGroup label="Account">
-          {ACCOUNT.map((item) => (
-            <SidebarItem key={item.label} item={item} active={isActive(item.href)} />
-          ))}
-        </SidebarGroup>
-
-        {isAdmin && (
-          <SidebarGroup label="Admin">
-            {ADMIN.map((item) => (
-              <SidebarItem key={item.label} item={item} active={isActive(item.href)} />
-            ))}
-          </SidebarGroup>
-        )}
-      </nav>
-    </aside>
+      )}
+    </>
   );
-}
 
-function SidebarGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <>
-      <div className="mt-3 flex w-full items-center px-4 py-1.5 text-xs font-medium text-muted-foreground">
-        {label}
-      </div>
-      <ul className="space-y-px px-2">{children}</ul>
+      {/* Mobile drawer overlay */}
+      {mobileOpen && (
+        <button
+          aria-label="Close sidebar"
+          onClick={closeMobile}
+          className="fixed inset-0 z-30 bg-background/70 backdrop-blur-sm md:hidden"
+        />
+      )}
+
+      <aside
+        className={cn(
+          "h-full shrink-0 flex-col border-r border-sidebar-border bg-sidebar transition-[width,transform] duration-200 ease-out",
+          // Desktop: visible, width depends on collapsed
+          "hidden md:flex",
+          collapsed ? "md:w-16" : "md:w-60",
+          // Mobile: render as fixed drawer when mobileOpen
+          mobileOpen
+            ? "fixed inset-y-0 left-0 z-40 flex w-64 translate-x-0"
+            : "max-md:-translate-x-full max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-64",
+        )}
+      >
+        <Link
+          href="/"
+          onClick={closeMobile}
+          className={cn(
+            "flex h-14 shrink-0 items-center gap-2 border-b border-sidebar-border hover:bg-sidebar-accent/40",
+            collapsed ? "justify-center px-2" : "px-4",
+          )}
+        >
+          <Image
+            src="/logos/scicom-logo.png"
+            alt="Scicom"
+            width={96}
+            height={24}
+            priority
+            className={cn("h-6 select-none", collapsed ? "w-6 object-contain" : "w-auto")}
+          />
+          {!collapsed && (
+            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Serverless
+            </span>
+          )}
+        </Link>
+
+        <nav className="flex-1 overflow-y-auto py-3 scrollbar-thin">{groups}</nav>
+      </aside>
     </>
   );
 }
 
-function SidebarItem({ item, active }: { item: Item; active?: boolean }) {
+function SidebarGroup({
+  label,
+  collapsed,
+  children,
+}: {
+  label: string;
+  collapsed?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <>
+      {!collapsed && (
+        <div className="mt-3 flex w-full items-center px-4 py-1.5 text-xs font-medium text-muted-foreground">
+          {label}
+        </div>
+      )}
+      <ul className={cn("space-y-px", collapsed ? "px-2 pt-2" : "px-2")}>{children}</ul>
+    </>
+  );
+}
+
+function SidebarItem({
+  item,
+  active,
+  collapsed,
+  onNavigate,
+}: {
+  item: Item;
+  active?: boolean;
+  collapsed?: boolean;
+  onNavigate?: () => void;
+}) {
+  if (item.locked) {
+    return (
+      <li>
+        <div
+          aria-disabled
+          title={collapsed ? `${item.label} — coming soon` : "Coming soon"}
+          className={cn(
+            "group flex cursor-not-allowed items-center rounded-md px-2 py-1.5 text-sm text-muted-foreground/70",
+            collapsed ? "justify-center" : "gap-2",
+          )}
+        >
+          <item.icon className="h-4 w-4 shrink-0" />
+          {!collapsed && (
+            <>
+              <span className="flex-1 truncate">{item.label}</span>
+              <Lock className="h-3 w-3 shrink-0 opacity-70" />
+            </>
+          )}
+        </div>
+      </li>
+    );
+  }
   return (
     <li>
       <Link
         href={item.href}
+        onClick={onNavigate}
+        title={collapsed ? item.label : undefined}
         className={cn(
-          "group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+          "group flex items-center rounded-md px-2 py-1.5 text-sm transition-colors",
+          collapsed ? "justify-center" : "gap-2",
           active
             ? "bg-sidebar-accent text-sidebar-accent-foreground"
             : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
         )}
       >
         <item.icon className="h-4 w-4 shrink-0" />
-        <span className="flex-1 truncate">{item.label}</span>
+        {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
       </Link>
     </li>
   );

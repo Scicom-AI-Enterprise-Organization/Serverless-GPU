@@ -18,7 +18,7 @@ export default async function Landing() {
       <div aria-hidden className="fixed inset-0 -z-10 bg-gradient-to-b from-background/50 via-background/80 to-background" />
 
       <header className="fixed top-0 inset-x-0 z-30 border-b border-border/30 bg-background/60 backdrop-blur-xl">
-        <nav className="mx-auto flex h-14 max-w-6xl items-center justify-between px-6">
+        <nav className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
           <Link href="/landing" className="flex items-center gap-2 font-semibold tracking-tight">
             <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-[0_0_30px_-5px] shadow-fuchsia-500/60">
               <Rocket className="h-4 w-4" />
@@ -37,10 +37,10 @@ export default async function Landing() {
 
       <main
         id="landing-scroll"
-        className="h-screen snap-y snap-mandatory overflow-y-auto scroll-smooth pt-14 scrollbar-thin"
+        className="h-screen overflow-y-auto scroll-smooth pt-14 scrollbar-thin md:snap-y md:snap-mandatory"
       >
         {/* HERO */}
-        <section id="hero" className="relative flex h-[calc(100vh-3.5rem)] snap-start snap-always items-center justify-center overflow-hidden px-6">
+        <section id="hero" className="relative flex min-h-[calc(100vh-3.5rem)] snap-start snap-always items-center justify-center overflow-hidden px-4 py-12 sm:px-6">
           <div aria-hidden className="absolute -top-24 left-1/4 -z-10 h-[480px] w-[480px] rounded-full bg-fuchsia-500/20 blur-[120px]" />
           <div aria-hidden className="absolute top-40 right-1/4 -z-10 h-[420px] w-[420px] rounded-full bg-violet-500/20 blur-[120px]" />
           <div className="mx-auto max-w-3xl text-center">
@@ -62,7 +62,7 @@ export default async function Landing() {
         </section>
 
         {/* HOW */}
-        <section id="how" className="relative flex h-screen snap-start snap-always items-center justify-center px-6">
+        <section id="how" className="relative flex min-h-screen snap-start snap-always items-center justify-center px-4 py-12 sm:px-6">
           <div className="mx-auto max-w-6xl">
             <div className="mb-10 text-center">
               <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">How it works</h2>
@@ -82,7 +82,7 @@ export default async function Landing() {
         </section>
 
         {/* FEATURES */}
-        <section id="features" className="relative flex h-screen snap-start snap-always items-center justify-center px-6">
+        <section id="features" className="relative flex min-h-screen snap-start snap-always items-center justify-center px-4 py-12 sm:px-6">
           <div aria-hidden className="absolute inset-0 -z-10 bg-gradient-to-br from-violet-500/5 via-transparent to-fuchsia-500/5" />
           <div aria-hidden className="absolute -top-32 right-0 -z-10 h-[400px] w-[400px] rounded-full bg-violet-500/15 blur-[140px]" />
           <div aria-hidden className="absolute -bottom-32 left-0 -z-10 h-[400px] w-[400px] rounded-full bg-fuchsia-500/15 blur-[140px]" />
@@ -105,7 +105,7 @@ export default async function Landing() {
         </section>
 
         {/* API */}
-        <section id="api" className="relative flex h-screen snap-start snap-always items-center justify-center px-6">
+        <section id="api" className="relative flex min-h-screen snap-start snap-always items-center justify-center px-4 py-12 sm:px-6">
           <div className="mx-auto max-w-4xl">
             <div className="mb-8 text-center">
               <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">One curl, real GPU</h2>
@@ -133,7 +133,7 @@ curl -X POST https://serverlessgpu.aies.scicom.dev/v1/chat/completions \\
         </section>
 
         {/* CTA */}
-        <section id="cta" className="relative flex h-screen snap-start snap-always items-center justify-center px-6">
+        <section id="cta" className="relative flex min-h-screen snap-start snap-always items-center justify-center px-4 py-12 sm:px-6">
           <div aria-hidden className="absolute inset-0 -z-10 bg-gradient-to-b from-transparent via-violet-500/5 to-transparent" />
           <div aria-hidden className="absolute left-1/2 top-1/2 -z-10 h-[420px] w-[760px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-fuchsia-500/15 blur-[140px]" />
           <div className="mx-auto max-w-3xl text-center">

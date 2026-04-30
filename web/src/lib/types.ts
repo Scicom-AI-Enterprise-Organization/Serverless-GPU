@@ -62,18 +62,3 @@ export type Me = {
   user_id: number;
   username: string;
 };
-
-// Worker Hub catalog item — only vLLM today, but typed so we can add more.
-export type HubWorker = {
-  slug: string;
-  name: string;
-  version: string;
-  category: "Language" | "Image" | "Video" | "Audio" | "Embedding";
-  description: string;
-  publisher: string;
-  stars: number;
-  preconfiguredVars: number;
-  defaultModel: string;
-  iconLetter: string;     // single-letter logo fallback
-  iconBg: string;         // tailwind bg class
-};
