@@ -45,6 +45,7 @@ class UpdateAutoscalerRequest(BaseModel):
     max_containers: Optional[int] = None
     tasks_per_container: Optional[int] = None
     idle_timeout_s: Optional[int] = None
+    vllm_args: Optional[str] = None
 
 
 class CreateAppRequest(BaseModel):
@@ -55,6 +56,7 @@ class CreateAppRequest(BaseModel):
     cpu: int = 2
     memory: str = "16Gi"
     request_timeout_s: int = 600
+    vllm_args: str = ""
 
 
 class CreateAppResponse(BaseModel):
@@ -71,6 +73,7 @@ class AppRecord(BaseModel):
     cpu: int = 2
     memory: str = "16Gi"
     request_timeout_s: int = 600
+    vllm_args: str = ""
     created_at: str
     owner: str
 
@@ -158,6 +161,7 @@ def _to_app_record(app: App) -> AppRecord:
         cpu=app.cpu,
         memory=app.memory,
         request_timeout_s=app.request_timeout_s,
+        vllm_args=app.vllm_args or "",
         created_at=app.created_at.isoformat() if app.created_at else "",
         owner=app.owner.username if app.owner else "",
     )
@@ -445,6 +449,7 @@ async def create_app(
         cpu=req.cpu,
         memory=req.memory,
         request_timeout_s=req.request_timeout_s,
+        vllm_args=(req.vllm_args or "").strip(),
         created_at=datetime.now(timezone.utc),
     )
     session.add(record)
@@ -517,6 +522,11 @@ async def update_app_autoscaler(
             cfg[k] = v
     target.autoscaler = cfg
     flag_modified(target, "autoscaler")
+    if "vllm_args" in updates:
+        new_args = (updates["vllm_args"] or "").strip()
+        if len(new_args) > 2048:
+            raise HTTPException(status_code=400, detail="vllm_args too long (max 2048 chars)")
+        target.vllm_args = new_args
     await session.commit()
     await session.refresh(target)
     # Reset the idle clock when idle_timeout_s changes — otherwise switching
@@ -528,6 +538,26 @@ async def update_app_autoscaler(
         )
     logger.info("autoscaler updated app=%s by user=%s: %s", app_id, user.username, updates)
     return _to_app_record(target)
+
+
+@app.post("/apps/{app_id}/restart")
+async def restart_app_workers(
+    app_id: str,
+    request: Request,
+    user: User = Depends(require_developer),
+    session: AsyncSession = Depends(get_session),
+):
+    """Drain every live worker so the autoscaler respawns them with the
+    current app config (e.g. updated vllm_args). In-flight requests finish;
+    the worker exits cleanly after its next heartbeat."""
+    rdb = request.app.state.redis
+    await _load_owned_app(session, app_id, user)
+
+    tracked = list(await rdb.smembers(f"worker_index:{app_id}"))
+    for mid in tracked:
+        await rdb.set(f"worker:{mid}:drain", "1", ex=600)
+    logger.info("restart app %s: marked %d workers for drain", app_id, len(tracked))
+    return {"ok": True, "app_id": app_id, "drained_workers": len(tracked)}
 
 
 @app.delete("/apps/{app_id}")

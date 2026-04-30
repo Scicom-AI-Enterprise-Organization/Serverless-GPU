@@ -55,7 +55,7 @@ export const gateway = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  updateAutoscaler: (id: string, body: Partial<{ max_containers: number; tasks_per_container: number; idle_timeout_s: number }>) =>
+  updateAutoscaler: (id: string, body: Partial<{ max_containers: number; tasks_per_container: number; idle_timeout_s: number; vllm_args: string }>) =>
     request<AppRecord>(`/apps/${encodeURIComponent(id)}/autoscaler`, {
       method: "PATCH",
       body: JSON.stringify(body),
@@ -64,6 +64,11 @@ export const gateway = {
     request<{ ok: boolean; app_id: string; drained_workers: number }>(
       `/apps/${encodeURIComponent(id)}`,
       { method: "DELETE" },
+    ),
+  restartApp: (id: string) =>
+    request<{ ok: boolean; app_id: string; drained_workers: number }>(
+      `/apps/${encodeURIComponent(id)}/restart`,
+      { method: "POST" },
     ),
   listAppRequests: (id: string, limit = 100) =>
     request<GatewayRequestRecord[]>(

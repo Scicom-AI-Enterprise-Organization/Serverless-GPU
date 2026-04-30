@@ -95,12 +95,16 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
         n_to_add = desired - current
         for _ in range(n_to_add):
             token = secrets.token_urlsafe(24)
+            env: dict[str, str] = {"REGISTRATION_TOKEN": token}
+            extra = (getattr(app, "vllm_args", "") or "").strip()
+            if extra:
+                env["VLLM_EXTRA_ARGS"] = extra
             try:
                 machine_id = await provider.provision(
                     app_id=app_id,
                     model=app.model,
                     gpu=app.gpu,
-                    env={"REGISTRATION_TOKEN": token},
+                    env=env,
                 )
                 _metrics.PROVISION_TOTAL.labels(provider=provider.name, ok="true").inc()
             except Exception:

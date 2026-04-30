@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { ArrowUpRight, Copy, Eye, EyeOff, Loader2, Pencil } from "lucide-react";
+import { ArrowUpRight, Copy, Eye, EyeOff, Loader2, Pencil, RotateCw } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { AppRecord } from "@/lib/types";
 import { gateway } from "@/lib/gateway";
-import { updateAutoscaler } from "../../actions";
+import { restartEndpoint, updateAutoscaler } from "../../actions";
 
 export function OverviewTab({ app }: { app: AppRecord }) {
   return (
@@ -23,6 +23,8 @@ export function OverviewTab({ app }: { app: AppRecord }) {
         <DetailCard app={app} />
         <ScaleStrategyCard app={app} />
       </div>
+
+      <EngineArgsCard app={app} />
     </div>
   );
 }
@@ -388,6 +390,143 @@ function ScaleStrategyCard({ app }: { app: AppRecord }) {
           Assuming <strong className="text-foreground">1</strong> req/sec with{" "}
           <strong className="text-foreground">0.5</strong> s processing time.
         </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function EngineArgsCard({ app }: { app: AppRecord }) {
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(app.vllm_args ?? "");
+  const [pending, startTransition] = useTransition();
+  const [restarting, startRestart] = useTransition();
+
+  useEffect(() => {
+    setValue(app.vllm_args ?? "");
+  }, [app.vllm_args]);
+
+  const tooLong = value.length > 2048;
+
+  function save() {
+    if (tooLong) {
+      toast.error("Engine args too long (max 2048 chars).");
+      return;
+    }
+    startTransition(async () => {
+      const res = await updateAutoscaler(app.app_id, { vllm_args: value.trim() });
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success("Engine args saved. Click Restart to apply now.");
+      setEditing(false);
+      router.refresh();
+    });
+  }
+
+  function restart() {
+    if (!confirm("Drain all running workers? In-flight requests finish; new ones spawn with the latest config.")) {
+      return;
+    }
+    startRestart(async () => {
+      const res = await restartEndpoint(app.app_id);
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
+      }
+      if (res.drained === 0) {
+        toast.success("No live workers to restart — next cold start will use the latest config.");
+      } else {
+        toast.success(`Draining ${res.drained} worker${res.drained === 1 ? "" : "s"} — autoscaler will respawn.`);
+      }
+      router.refresh();
+    });
+  }
+
+  function cancel() {
+    setValue(app.vllm_args ?? "");
+    setEditing(false);
+  }
+
+  const display = (app.vllm_args ?? "").trim();
+  return (
+    <Card>
+      <CardHeader className="flex-row items-center justify-between gap-2">
+        <div className="flex flex-col gap-0.5">
+          <CardTitle className="text-sm font-medium">vLLM engine args</CardTitle>
+          <span className="text-xs text-muted-foreground">
+            Appended to the <code className="font-mono">vllm serve</code> command on each worker
+            boot. Changes apply on the next cold start.
+          </span>
+        </div>
+        {!editing ? (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={restart}
+              disabled={restarting}
+              title="Drain workers so the next cold start picks up the latest config"
+            >
+              {restarting ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RotateCw className="h-3 w-3" />
+              )}
+              Restart workers
+            </Button>
+            <Button variant="outline" size="xs" onClick={() => setEditing(true)}>
+              <Pencil className="h-3 w-3" />
+              Edit
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="xs" onClick={cancel} disabled={pending}>
+              Cancel
+            </Button>
+            <Button size="xs" onClick={save} disabled={pending || tooLong}>
+              {pending && <Loader2 className="h-3 w-3 animate-spin" />}
+              Save
+            </Button>
+          </div>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        {editing ? (
+          <>
+            <textarea
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="--max-model-len 4096 --gpu-memory-utilization 0.9"
+              rows={3}
+              aria-invalid={tooLong}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/30 aria-invalid:border-destructive"
+              disabled={pending}
+            />
+            <p className="text-xs text-muted-foreground">
+              See{" "}
+              <a
+                href="https://docs.vllm.ai/en/stable/configuration/engine_args/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:text-foreground"
+              >
+                vLLM engine args
+              </a>
+              . {value.length}/2048 chars.
+            </p>
+          </>
+        ) : display ? (
+          <pre className="overflow-x-auto rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed text-foreground scrollbar-thin">
+            {display}
+          </pre>
+        ) : (
+          <p className="rounded-md border border-dashed border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+            No custom args — vLLM uses its built-in defaults.
+          </p>
+        )}
       </CardContent>
     </Card>
   );

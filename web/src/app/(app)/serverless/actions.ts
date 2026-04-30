@@ -20,13 +20,25 @@ export async function deployEndpoint(input: CreateAppRequest): Promise<DeployRes
 
 export async function updateAutoscaler(
   appId: string,
-  patch: Partial<{ max_containers: number; tasks_per_container: number; idle_timeout_s: number }>,
+  patch: Partial<{ max_containers: number; tasks_per_container: number; idle_timeout_s: number; vllm_args: string }>,
 ): Promise<DeployResult> {
   try {
     await gateway.updateAutoscaler(appId, patch);
     revalidatePath(`/serverless/${appId}`);
     revalidatePath("/serverless");
     return { ok: true, app_id: appId };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export async function restartEndpoint(
+  appId: string,
+): Promise<{ ok: true; drained: number } | { ok: false; error: string }> {
+  try {
+    const res = await gateway.restartApp(appId);
+    revalidatePath(`/serverless/${appId}`);
+    return { ok: true, drained: res.drained_workers };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

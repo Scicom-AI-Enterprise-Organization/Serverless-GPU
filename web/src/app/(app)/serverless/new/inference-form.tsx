@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Loader2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +36,34 @@ const GPU_CHOICES = [
 
 const MAX_WORKERS = 1;
 
+// Common vLLM engine args. Defaults are conservative — users can override.
+// Reference: https://docs.vllm.ai/en/stable/configuration/engine_args/
+const DEFAULT_VLLM_ARGS = {
+  max_model_len: "",
+  gpu_memory_utilization: "0.9",
+  dtype: "auto",
+  max_num_seqs: "",
+  tensor_parallel_size: "1",
+  extra: "",
+};
+
+const DTYPE_CHOICES = ["auto", "float16", "bfloat16", "float32"] as const;
+
+function buildVllmArgs(v: typeof DEFAULT_VLLM_ARGS): string {
+  const parts: string[] = [];
+  if (v.max_model_len.trim()) parts.push(`--max-model-len ${v.max_model_len.trim()}`);
+  if (v.gpu_memory_utilization.trim() && v.gpu_memory_utilization.trim() !== "0.9") {
+    parts.push(`--gpu-memory-utilization ${v.gpu_memory_utilization.trim()}`);
+  }
+  if (v.dtype && v.dtype !== "auto") parts.push(`--dtype ${v.dtype}`);
+  if (v.max_num_seqs.trim()) parts.push(`--max-num-seqs ${v.max_num_seqs.trim()}`);
+  if (v.tensor_parallel_size.trim() && v.tensor_parallel_size.trim() !== "1") {
+    parts.push(`--tensor-parallel-size ${v.tensor_parallel_size.trim()}`);
+  }
+  if (v.extra.trim()) parts.push(v.extra.trim());
+  return parts.join(" ");
+}
+
 export function InferenceForm() {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -45,6 +73,24 @@ export function InferenceForm() {
   const [gpu, setGpu] = useState(GPU_CHOICES[0].value);
   const [idleInput, setIdleInput] = useState("");
   const [alwaysOn, setAlwaysOn] = useState(true);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [vllm, setVllm] = useState({ ...DEFAULT_VLLM_ARGS });
+
+  const gpuMemInvalid = (() => {
+    const s = vllm.gpu_memory_utilization.trim();
+    if (!s) return false;
+    const n = Number.parseFloat(s);
+    return !Number.isFinite(n) || n <= 0 || n > 1;
+  })();
+  const intFieldInvalid = (s: string) => {
+    if (!s.trim()) return false;
+    return !/^\d+$/.test(s.trim()) || Number.parseInt(s.trim(), 10) < 1;
+  };
+  const advancedInvalid =
+    gpuMemInvalid ||
+    intFieldInvalid(vllm.max_model_len) ||
+    intFieldInvalid(vllm.max_num_seqs) ||
+    intFieldInvalid(vllm.tensor_parallel_size);
 
   const parsedIdle = Number.parseInt(idleInput, 10);
   const idleInvalid =
@@ -61,6 +107,11 @@ export function InferenceForm() {
       );
       return;
     }
+    if (advancedInvalid) {
+      toast.error("Fix the invalid values in Advanced options.");
+      return;
+    }
+    const vllmArgs = buildVllmArgs(vllm);
     startTransition(async () => {
       const res = await deployEndpoint({
         name: slugify(name),
@@ -70,6 +121,7 @@ export function InferenceForm() {
           max_containers: MAX_WORKERS,
           idle_timeout_s: alwaysOn ? 0 : parsedIdle,
         },
+        vllm_args: vllmArgs,
       });
       if (!res.ok) {
         toast.error(res.error);
@@ -186,13 +238,146 @@ export function InferenceForm() {
         <p className="text-xs text-muted-foreground">
           Max workers is fixed at <span className="font-medium text-foreground">1</span> for now.
         </p>
+
+        <div className="border-t border-border pt-4">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((v) => !v)}
+            className="flex w-full items-center gap-1.5 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
+          >
+            {advancedOpen ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+            Advanced options (vLLM engine args)
+          </button>
+          {advancedOpen && (
+            <div className="mt-4 space-y-4">
+              <p className="text-xs text-muted-foreground">
+                Defaults are sensible for most models. Override only when you know you need to.
+                See{" "}
+                <a
+                  href="https://docs.vllm.ai/en/stable/configuration/engine_args/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:text-foreground"
+                >
+                  vLLM engine args
+                </a>
+                .
+              </p>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Field
+                  label="max-model-len"
+                  hint="Context window in tokens. Empty = model's default."
+                >
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    value={vllm.max_model_len}
+                    onChange={(e) =>
+                      setVllm((v) => ({ ...v, max_model_len: e.target.value }))
+                    }
+                    placeholder="e.g. 4096"
+                    aria-invalid={intFieldInvalid(vllm.max_model_len)}
+                  />
+                </Field>
+                <Field
+                  label="gpu-memory-utilization"
+                  hint="Fraction of VRAM vLLM may use (0–1). Default 0.9."
+                >
+                  <Input
+                    type="text"
+                    inputMode="decimal"
+                    value={vllm.gpu_memory_utilization}
+                    onChange={(e) =>
+                      setVllm((v) => ({ ...v, gpu_memory_utilization: e.target.value }))
+                    }
+                    placeholder="0.9"
+                    aria-invalid={gpuMemInvalid}
+                  />
+                </Field>
+                <Field label="dtype" hint="Weight precision.">
+                  <Select
+                    value={vllm.dtype}
+                    onValueChange={(val) => setVllm((v) => ({ ...v, dtype: val }))}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DTYPE_CHOICES.map((d) => (
+                        <SelectItem key={d} value={d}>
+                          {d}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field
+                  label="max-num-seqs"
+                  hint="Max concurrent sequences. Empty = vLLM default."
+                >
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    value={vllm.max_num_seqs}
+                    onChange={(e) =>
+                      setVllm((v) => ({ ...v, max_num_seqs: e.target.value }))
+                    }
+                    placeholder="e.g. 256"
+                    aria-invalid={intFieldInvalid(vllm.max_num_seqs)}
+                  />
+                </Field>
+                <Field
+                  label="tensor-parallel-size"
+                  hint="Number of GPUs for tensor parallelism. Default 1."
+                >
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    value={vllm.tensor_parallel_size}
+                    onChange={(e) =>
+                      setVllm((v) => ({ ...v, tensor_parallel_size: e.target.value }))
+                    }
+                    placeholder="1"
+                    aria-invalid={intFieldInvalid(vllm.tensor_parallel_size)}
+                  />
+                </Field>
+              </div>
+              <Field
+                label="Extra args (raw)"
+                hint="Appended verbatim to the vllm serve command. e.g. --enforce-eager --quantization awq"
+              >
+                <textarea
+                  value={vllm.extra}
+                  onChange={(e) => setVllm((v) => ({ ...v, extra: e.target.value }))}
+                  placeholder="--enforce-eager"
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+                />
+              </Field>
+              {buildVllmArgs(vllm) && (
+                <div className="rounded-md bg-muted/50 px-3 py-2 text-xs">
+                  <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Final command
+                  </div>
+                  <code className="break-words font-mono text-foreground">
+                    vllm serve {`<model>`} {buildVllmArgs(vllm)}
+                  </code>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="mt-5 flex items-center justify-end gap-2">
         <Button variant="ghost" onClick={() => router.push("/serverless")} disabled={pending}>
           Cancel
         </Button>
-        <Button onClick={submit} disabled={pending || idleInvalid}>
+        <Button onClick={submit} disabled={pending || idleInvalid || advancedInvalid}>
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
           Create endpoint
         </Button>

@@ -49,6 +49,7 @@ class App(Base):
     cpu: Mapped[int] = mapped_column(Integer, default=2)
     memory: Mapped[str] = mapped_column(String(32), default="16Gi")
     request_timeout_s: Mapped[int] = mapped_column(Integer, default=600)
+    vllm_args: Mapped[str] = mapped_column(String(2048), default="", server_default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -95,6 +96,9 @@ async def init_db() -> None:
         ))
         await conn.execute(text(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE apps ADD COLUMN IF NOT EXISTS vllm_args VARCHAR(2048) NOT NULL DEFAULT ''"
         ))
         await conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users(email) WHERE email IS NOT NULL"

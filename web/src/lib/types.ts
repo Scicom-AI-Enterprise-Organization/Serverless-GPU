@@ -15,6 +15,7 @@ export type AppRecord = {
   cpu: number;
   memory: string;
   request_timeout_s: number;
+  vllm_args: string;
   created_at: string;
   owner: string;
 };
@@ -27,6 +28,7 @@ export type CreateAppRequest = {
   cpu?: number;
   memory?: string;
   request_timeout_s?: number;
+  vllm_args?: string;
 };
 
 export type CreateAppResponse = {
