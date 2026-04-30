@@ -500,6 +500,7 @@ async def get_app_endpoint(
 async def update_app_autoscaler(
     app_id: str,
     req: UpdateAutoscalerRequest,
+    request: Request,
     user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
@@ -518,6 +519,13 @@ async def update_app_autoscaler(
     flag_modified(target, "autoscaler")
     await session.commit()
     await session.refresh(target)
+    # Reset the idle clock when idle_timeout_s changes — otherwise switching
+    # always-on (0) → finite tears down immediately because last_request_ts
+    # is already far in the past.
+    if "idle_timeout_s" in updates:
+        await request.app.state.redis.set(
+            f"app:{app_id}:last_request_ts", str(time.time())
+        )
     logger.info("autoscaler updated app=%s by user=%s: %s", app_id, user.username, updates)
     return _to_app_record(target)
 
