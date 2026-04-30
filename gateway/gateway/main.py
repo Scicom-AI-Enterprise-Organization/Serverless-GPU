@@ -29,7 +29,6 @@ from .auth import (
     verify_password,
 )
 from .db import App, Request as ReqRow, User, get_session, init_db, get_user_by_username, list_all_apps, seed_admin_user, session_factory, shutdown_db
-from .inference import router as inference_router
 
 logger = logging.getLogger("gateway")
 
@@ -180,12 +179,10 @@ async def lifespan(app: FastAPI):
     app.state.provider = None
     app.state.autoscaler_task = None
     app.state.reconciler_task = None
-    app.state.inference_reconciler_task = None
     if os.environ.get("AUTOSCALER", "0") == "1":
         from .provider import build_provider
         from .autoscaler import autoscaler_loop
         from .reconciler import reconciler_loop
-        from .inference_reconciler import inference_reconciler_loop
 
         provider_name = os.environ.get("PROVIDER", "fake")
 
@@ -220,15 +217,12 @@ async def lifespan(app: FastAPI):
         app.state.reconciler_task = asyncio.create_task(
             reconciler_loop(app.state.redis, app.state.provider)
         )
-        app.state.inference_reconciler_task = asyncio.create_task(
-            inference_reconciler_loop(session_factory(), app.state.provider)
-        )
-        logger.info("autoscaler + reconciler + inference reconciler enabled (provider=%s)", app.state.provider.name)
+        logger.info("autoscaler + reconciler enabled (provider=%s)", app.state.provider.name)
 
     try:
         yield
     finally:
-        for task_attr in ("autoscaler_task", "reconciler_task", "inference_reconciler_task"):
+        for task_attr in ("autoscaler_task", "reconciler_task"):
             t = getattr(app.state, task_attr, None)
             if t:
                 t.cancel()
@@ -249,7 +243,6 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
-app.include_router(inference_router)
 
 
 @app.middleware("http")
