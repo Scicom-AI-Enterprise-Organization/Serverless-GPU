@@ -58,7 +58,13 @@ class App(Base):
 class Request(Base):
     __tablename__ = "requests"
     request_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    app_id: Mapped[str] = mapped_column(String(64), ForeignKey("apps.app_id", ondelete="CASCADE"), index=True)
+    # app_id is nullable because /inference requests are tied to a model, not an app.
+    app_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("apps.app_id", ondelete="CASCADE"), index=True, nullable=True
+    )
+    model_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("models.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     endpoint: Mapped[str] = mapped_column(String(64))
     payload: Mapped[dict] = mapped_column(JSON)
@@ -69,6 +75,37 @@ class Request(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
     )
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Model(Base):
+    """An Inference endpoint backed by a single vLLM worker on PI bare metal.
+
+    Distinct from App (which is the Serverless feature). Scale-to-zero only:
+    no min replicas knob — `idle_timeout_s` drives teardown.
+    """
+    __tablename__ = "models"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    hf_repo: Mapped[str] = mapped_column(String(255))
+    vram_gb: Mapped[int] = mapped_column(Integer)
+    gpu_type: Mapped[str] = mapped_column(String(32))           # internal — never returned to non-admin
+    tier_label: Mapped[str] = mapped_column(String(32))         # user-visible tier (e.g. "consumer-24gb")
+    idle_timeout_s: Mapped[int] = mapped_column(Integer, default=300)
+    network_volume_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    active_machine_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    active_endpoint: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    state: Mapped[str] = mapped_column(String(16), default="idle", index=True)  # idle|cold-starting|ready|error|terminating
+    last_request_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
 
 _engine = None
@@ -115,6 +152,37 @@ async def init_db() -> None:
                 ALTER TABLE users ADD COLUMN role VARCHAR(16) NOT NULL DEFAULT 'user';
                 UPDATE users SET role = CASE WHEN is_admin THEN 'admin' ELSE 'developer' END;
               END IF;
+            END $$;
+        """))
+        # Inference endpoints rollout: requests.app_id becomes nullable (so an
+        # inference request can have no app), and gets a model_id FK pointing
+        # at the new models table.
+        await conn.execute(text(
+            "ALTER TABLE requests ADD COLUMN IF NOT EXISTS model_id VARCHAR(36)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE requests ALTER COLUMN app_id DROP NOT NULL"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_requests_model_id ON requests(model_id)"
+        ))
+        # Best-effort FK: skip silently if app_id was already nullable elsewhere
+        # or the constraint exists. New installs get it via Base.metadata.create_all.
+        await conn.execute(text("""
+            DO $$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM information_schema.table_constraints
+                WHERE table_name='requests' AND constraint_name='requests_model_id_fkey'
+              ) THEN
+                ALTER TABLE requests
+                  ADD CONSTRAINT requests_model_id_fkey
+                  FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE SET NULL;
+              END IF;
+            EXCEPTION WHEN undefined_table THEN
+              -- models table not yet created (race on first boot); create_all
+              -- above will have already produced it, so this branch is rare.
+              NULL;
             END $$;
         """))
 
