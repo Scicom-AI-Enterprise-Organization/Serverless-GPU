@@ -547,17 +547,46 @@ async def restart_app_workers(
     user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
-    """Drain every live worker so the autoscaler respawns them with the
-    current app config (e.g. updated vllm_args). In-flight requests finish;
-    the worker exits cleanly after its next heartbeat."""
+    """Drain + terminate every worker for this app so the autoscaler
+    respawns with the latest config (e.g. updated vllm_args).
+
+    Setting the drain marker lets in-flight heartbeat-bound requests wrap up
+    cleanly; calling provider.terminate() actually deletes the underlying
+    RunPod pod (otherwise it lingers, since RunPod doesn't reap exited
+    containers and we'd accumulate phantom pods on each restart). Picks up
+    orphan pods (in the provider but not in worker_index) too."""
     rdb = request.app.state.redis
     await _load_owned_app(session, app_id, user)
 
-    tracked = list(await rdb.smembers(f"worker_index:{app_id}"))
+    tracked = set(await rdb.smembers(f"worker_index:{app_id}"))
     for mid in tracked:
         await rdb.set(f"worker:{mid}:drain", "1", ex=600)
-    logger.info("restart app %s: marked %d workers for drain", app_id, len(tracked))
-    return {"ok": True, "app_id": app_id, "drained_workers": len(tracked)}
+
+    provider = getattr(request.app.state, "provider", None)
+    all_machines = set(tracked)
+    if provider is not None:
+        try:
+            orphans = set(await provider.list_machines_for_app(app_id)) - tracked
+            if orphans:
+                logger.info("restart app %s: also terminating %d orphan pods", app_id, len(orphans))
+                all_machines |= orphans
+        except Exception:
+            logger.exception("restart app %s: list_machines_for_app failed", app_id)
+        for mid in all_machines:
+            try:
+                await provider.terminate(mid)
+            except Exception:
+                logger.exception("restart app %s: provider.terminate(%s) failed", app_id, mid)
+
+    for mid in all_machines:
+        await rdb.delete(f"worker:{mid}", f"register_token:{mid}")
+    if all_machines:
+        await rdb.srem(f"worker_index:{app_id}", *all_machines)
+
+    logger.info(
+        "restart app %s: drained=%d terminated=%d", app_id, len(tracked), len(all_machines),
+    )
+    return {"ok": True, "app_id": app_id, "drained_workers": len(all_machines)}
 
 
 @app.delete("/apps/{app_id}")
