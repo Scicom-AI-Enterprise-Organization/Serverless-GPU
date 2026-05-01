@@ -41,6 +41,22 @@ async function authHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+export class GatewayError extends Error {
+  status: number;
+  body: string;
+  parsed: unknown;
+  constructor(status: number, body: string) {
+    super(`gateway ${status}: ${body || "<empty>"}`);
+    this.status = status;
+    this.body = body;
+    try {
+      this.parsed = body ? JSON.parse(body) : null;
+    } catch {
+      this.parsed = null;
+    }
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const url = isServer ? `${PUBLIC_BASE}${path}` : `/api/proxy${path}`;
   const headers: Record<string, string> = {
@@ -51,7 +67,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers, cache: "no-store" });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`gateway ${res.status}: ${body || res.statusText}`);
+    throw new GatewayError(res.status, body);
   }
   const text = await res.text();
   return (text ? JSON.parse(text) : null) as T;

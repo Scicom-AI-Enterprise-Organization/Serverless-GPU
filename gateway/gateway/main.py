@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -508,6 +509,75 @@ async def create_app(
         await session.rollback()
         raise HTTPException(status_code=409, detail={"error": "app name already taken"})
     logger.info("created app %s by user=%s (%s on %s)", req.name, user.username, req.model, req.gpu)
+
+    # Pre-flight: when always-on (idle_timeout_s == 0) the autoscaler will
+    # immediately try to provision. Do that one attempt synchronously so we
+    # can fail the create cleanly if the provider rejects the spec
+    # (out of stock, GPU not on this cloud tier, etc.) — instead of leaving
+    # the user with a phantom endpoint they have to delete.
+    provider = getattr(request.app.state, "provider", None)
+    if req.autoscaler.idle_timeout_s == 0 and provider is not None:
+        rdb = request.app.state.redis
+        # Block the autoscaler tick from racing this attempt.
+        await rdb.set(
+            f"app:{req.name}:provision_cooldown_until",
+            str(time.time() + 30),
+            ex=60,
+        )
+        token = secrets.token_urlsafe(24)
+        env: dict[str, str] = {"REGISTRATION_TOKEN": token}
+        extra = (req.vllm_args or "").strip()
+        if extra:
+            env["VLLM_EXTRA_ARGS"] = extra
+        try:
+            from .autoscaler import REGISTRATION_TOKEN_TTL_S
+            machine_id = await provider.provision(
+                app_id=req.name,
+                model=req.model,
+                gpu=req.gpu,
+                env=env,
+                gpu_count=req.gpu_count,
+            )
+        except Exception as e:
+            error_msg = (str(e) or repr(e))[:500]
+            logger.warning(
+                "create_app pre-flight provision failed for %s gpu=%sx%d: %s",
+                req.name, req.gpu, req.gpu_count, error_msg,
+            )
+            # Roll back: delete the app so the user can retry with a different
+            # combo without bumping into the unique-name 409.
+            try:
+                await session.delete(record)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                logger.exception("create_app rollback failed for %s", req.name)
+            await rdb.delete(f"app:{req.name}:provision_cooldown_until")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "GPU not available right now",
+                    "reason": error_msg,
+                    "gpu": req.gpu,
+                    "gpu_count": req.gpu_count,
+                },
+            )
+        # Success — register the worker so the autoscaler sees current=1.
+        await rdb.set(f"register_token:{machine_id}", token, ex=REGISTRATION_TOKEN_TTL_S)
+        await rdb.sadd(f"worker_index:{req.name}", machine_id)
+        await rdb.set(
+            f"worker:{machine_id}",
+            json.dumps({
+                "machine_id": machine_id,
+                "app_id": req.name,
+                "status": "provisioning",
+                "last_seen": time.time(),
+            }),
+            ex=REGISTRATION_TOKEN_TTL_S,
+        )
+        await rdb.delete(f"app:{req.name}:provision_cooldown_until")
+        logger.info("create_app pre-flight provisioned %s for %s", machine_id, req.name)
+
     return CreateAppResponse(app_id=req.name, url=f"/run/{req.name}")
 
 

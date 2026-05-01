@@ -1,12 +1,23 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { gateway } from "@/lib/gateway";
+import { gateway, GatewayError } from "@/lib/gateway";
 import type { CreateAppRequest } from "@/lib/types";
 
 export type DeployResult =
   | { ok: true; app_id: string }
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      error: string;
+      // Populated when the gateway rejected with a structured "GPU not
+      // available" error from the create-time provision pre-flight (503).
+      // The form uses these to render a clear modal instead of a toast.
+      unavailable?: {
+        gpu: string;
+        gpu_count: number;
+        reason: string;
+      };
+    };
 
 export async function deployEndpoint(input: CreateAppRequest): Promise<DeployResult> {
   try {
@@ -14,6 +25,25 @@ export async function deployEndpoint(input: CreateAppRequest): Promise<DeployRes
     revalidatePath("/serverless");
     return { ok: true, app_id: res.app_id };
   } catch (e) {
+    if (e instanceof GatewayError && e.status === 503 && e.parsed) {
+      const detail = (e.parsed as { detail?: Record<string, unknown> }).detail;
+      if (
+        detail &&
+        typeof detail === "object" &&
+        "reason" in detail &&
+        "gpu" in detail
+      ) {
+        return {
+          ok: false,
+          error: String(detail.error ?? "GPU not available"),
+          unavailable: {
+            gpu: String(detail.gpu),
+            gpu_count: Number(detail.gpu_count ?? 1),
+            reason: String(detail.reason),
+          },
+        };
+      }
+    }
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }

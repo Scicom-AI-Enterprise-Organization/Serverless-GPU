@@ -9,6 +9,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -130,6 +138,10 @@ export function InferenceForm() {
   const [alwaysOn, setAlwaysOn] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [vllm, setVllm] = useState({ ...DEFAULT_VLLM_ARGS });
+  const [unavailableModal, setUnavailableModal] = useState<
+    | { gpu: string; gpu_count: number; reason: string }
+    | null
+  >(null);
 
   const gpuMemInvalid = (() => {
     const s = vllm.gpu_memory_utilization.trim();
@@ -191,7 +203,11 @@ export function InferenceForm() {
         vllm_args: vllmArgs,
       });
       if (!res.ok) {
-        toast.error(res.error);
+        if (res.unavailable) {
+          setUnavailableModal(res.unavailable);
+        } else {
+          toast.error(res.error);
+        }
         return;
       }
       toast.success(`Endpoint ${res.app_id} created`);
@@ -473,6 +489,42 @@ export function InferenceForm() {
           Create endpoint
         </Button>
       </div>
+
+      <Dialog
+        open={unavailableModal !== null}
+        onOpenChange={(open) => {
+          if (!open) setUnavailableModal(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              GPU not available right now
+            </DialogTitle>
+            <DialogDescription>
+              The provider rejected the worker for{" "}
+              <span className="font-mono text-foreground">
+                {unavailableModal?.gpu}
+              </span>{" "}
+              ×{unavailableModal?.gpu_count}. The endpoint wasn't created so you
+              can pick a different combo and retry.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed text-foreground break-words">
+            {unavailableModal?.reason}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Suggestions: try a smaller count (e.g. ×1), pick a different GPU
+            (RTX 3090, RTX 4090, A100 are usually well-stocked), or switch to
+            on-demand idle so the worker only spawns when you actually fire a
+            request.
+          </p>
+          <DialogFooter>
+            <Button onClick={() => setUnavailableModal(null)}>Got it</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
