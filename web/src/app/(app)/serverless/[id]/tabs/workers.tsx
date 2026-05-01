@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -309,6 +309,24 @@ function WorkerLogs({ machineId }: { machineId: string }) {
 
   const empty = source === "gateway" ? events.length === 0 : lines.length === 0;
 
+  // Auto-tail: keep the scroll pinned to the bottom on updates so the view
+  // feels live. If the user has scrolled up to read older content (more than
+  // 32px above the bottom), leave them alone — yanking them away mid-read
+  // is the wrong behavior.
+  const scrollRef = useRef<HTMLDivElement | HTMLPreElement | null>(null);
+  const wasAtBottomRef = useRef(true);
+  // Capture "was the user at bottom?" BEFORE the DOM updates, then scroll
+  // after — prevents the layout flash you'd get with a plain useEffect.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (wasAtBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+    wasAtBottomRef.current = distance < 32;
+  }, [lines, events, source]);
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -368,13 +386,19 @@ function WorkerLogs({ machineId }: { machineId: string }) {
               : "no container logs yet — vLLM may still be booting, or this worker pre-dates the log shipper"}
         </div>
       ) : source === "gateway" ? (
-        <div className="max-h-72 overflow-auto rounded-md border border-border bg-background/60 p-2 text-xs scrollbar-thin">
+        <div
+          ref={(el) => { scrollRef.current = el; }}
+          className="max-h-72 overflow-auto rounded-md border border-border bg-background/60 p-2 text-xs scrollbar-thin"
+        >
           {events.map((e, i) => (
             <EventRow key={i} event={e} />
           ))}
         </div>
       ) : (
-        <pre className="max-h-72 overflow-auto rounded-md border border-border bg-background/60 p-3 font-mono text-[11px] leading-relaxed scrollbar-thin">
+        <pre
+          ref={(el) => { scrollRef.current = el; }}
+          className="max-h-72 overflow-auto rounded-md border border-border bg-background/60 p-3 font-mono text-[11px] leading-relaxed scrollbar-thin"
+        >
           {lines.map((l, i) => (
             <div key={i}>{l}</div>
           ))}
