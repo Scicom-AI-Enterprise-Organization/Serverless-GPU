@@ -33,13 +33,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from typing import Any, Optional
 
 import httpx
 
-from .provider import Provider
+from .provider import GpuAvailability, Provider
 
 logger = logging.getLogger("gateway.pi_provider")
+
+_AVAILABILITY_TTL_S = 30.0
 
 
 _GPU_NAME_MAP = {
@@ -121,6 +124,10 @@ class PrimeIntellectProvider(Provider):
 
         # local map machine_id (our id baked into pod name) → pod_id (PI's id).
         self._pod_ids: dict[str, str] = {}
+
+        # availability cache: (gpu, count) -> (result, expiry_epoch)
+        self._avail_cache: dict[tuple[str, int], tuple[GpuAvailability, float]] = {}
+        self._avail_locks: dict[tuple[str, int], asyncio.Lock] = {}
 
     async def provision(self, app_id: str, model: str, gpu: str, env: dict[str, str]) -> str:
         import uuid as _uuid
@@ -251,6 +258,118 @@ class PrimeIntellectProvider(Provider):
                 break
             offset += 100
         return None
+
+    async def check_availability(self, gpu: str, count: int) -> GpuAvailability:
+        """Hit PI's /availability endpoint and parse the cheapest matching row.
+
+        Cached for 30s per (gpu, count) to bound upstream RPS. Single-flighted
+        with a per-key lock so concurrent UI checks coalesce into one API call.
+        """
+        key = (gpu, count)
+        now = time.time()
+        cached = self._avail_cache.get(key)
+        if cached is not None and cached[1] > now:
+            return cached[0]
+
+        lock = self._avail_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            cached = self._avail_cache.get(key)
+            if cached is not None and cached[1] > time.time():
+                return cached[0]
+
+            pi_gpu = _map_gpu(gpu)
+            params: dict[str, Any] = {"gpu_count": count, "gpu_type": pi_gpu}
+            if self.data_center_id:
+                params["regions"] = self.data_center_id
+            try:
+                r = await self._client.get("/api/v1/availability/", params=params)
+            except Exception as e:
+                logger.warning("pi-availability request failed: %s", e)
+                result = GpuAvailability(
+                    gpu=gpu, count=count, available=None,
+                    reason="Couldn't reach Prime Intellect",
+                )
+                self._avail_cache[key] = (result, time.time() + 5.0)
+                return result
+
+            if r.status_code >= 400:
+                logger.warning("pi-availability %s: %s", r.status_code, r.text[:200])
+                result = GpuAvailability(
+                    gpu=gpu, count=count, available=None,
+                    reason=f"PI availability check returned {r.status_code}",
+                )
+                self._avail_cache[key] = (result, time.time() + 5.0)
+                return result
+
+            payload = r.json()
+            # PI's /availability response groups rows by gpu type. The shape
+            # historically is {"<GPU_TYPE>": [row, row, ...]} or a flat list;
+            # normalize to a flat list of dicts.
+            rows: list[dict[str, Any]] = []
+            if isinstance(payload, dict):
+                if pi_gpu in payload and isinstance(payload[pi_gpu], list):
+                    rows = payload[pi_gpu]
+                elif "data" in payload and isinstance(payload["data"], list):
+                    rows = payload["data"]
+                else:
+                    for v in payload.values():
+                        if isinstance(v, list):
+                            rows.extend(x for x in v if isinstance(x, dict))
+            elif isinstance(payload, list):
+                rows = [x for x in payload if isinstance(x, dict)]
+
+            # Filter to rows that match our socket preference (PCIe vs SXM).
+            socket_match = [
+                row for row in rows
+                if not self.gpu_socket
+                or str(row.get("socket", "")).upper() == self.gpu_socket.upper()
+                or row.get("socket") in (None, "")
+            ]
+            usable = socket_match or rows
+
+            if not usable:
+                result = GpuAvailability(
+                    gpu=gpu, count=count, available=False,
+                    reason=f"No {gpu}×{count} in stock on Prime Intellect right now",
+                )
+                self._avail_cache[key] = (result, time.time() + _AVAILABILITY_TTL_S)
+                return result
+
+            prices: list[float] = []
+            for row in usable:
+                for k in ("prices", "price"):
+                    v = row.get(k)
+                    if isinstance(v, dict):
+                        for kk in ("onDemand", "on_demand", "communityPrice", "price"):
+                            if kk in v:
+                                try:
+                                    prices.append(float(v[kk]))
+                                    break
+                                except (TypeError, ValueError):
+                                    pass
+                    elif v is not None:
+                        try:
+                            prices.append(float(v))
+                        except (TypeError, ValueError):
+                            pass
+            cheapest = min(prices) if prices else None
+
+            regions: list[str] = []
+            for row in usable:
+                for k in ("dataCenter", "data_center", "region", "country"):
+                    v = row.get(k)
+                    if isinstance(v, str) and v and v not in regions:
+                        regions.append(v)
+                        break
+            if cheapest is None and not regions:
+                logger.info("pi-availability: %d rows but no parseable price/region (sample=%s)", len(usable), usable[0] if usable else None)
+
+            result = GpuAvailability(
+                gpu=gpu, count=count, available=True,
+                cheapest_price_hr=cheapest, regions=regions,
+            )
+            self._avail_cache[key] = (result, time.time() + _AVAILABILITY_TTL_S)
+            return result
 
     async def shutdown(self) -> None:
         # Don't terminate pods on gateway shutdown — that would scale-to-zero

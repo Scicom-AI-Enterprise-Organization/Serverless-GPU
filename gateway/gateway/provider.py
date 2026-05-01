@@ -11,11 +11,30 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import uuid
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 logger = logging.getLogger("gateway.provider")
+
+
+@dataclass
+class GpuAvailability:
+    """Result of a provider availability check.
+
+    `available` is tri-state: True/False/None. None means we couldn't reach
+    the upstream (auth failure, 5xx, timeout) and the UI should fall back to
+    "unknown — try anyway" rather than blocking the user.
+    """
+    gpu: str
+    count: int
+    available: Optional[bool]
+    cheapest_price_hr: Optional[float] = None
+    regions: list[str] = field(default_factory=list)
+    reason: Optional[str] = None
+    checked_at: float = field(default_factory=lambda: time.time())
 
 
 class Provider(ABC):
@@ -46,6 +65,12 @@ class Provider(ABC):
         Default falls back to list_machines; providers that can filter
         cheaply (e.g. by pod name prefix) should override."""
         return await self.list_machines()
+
+    async def check_availability(self, gpu: str, count: int) -> GpuAvailability:
+        """Best-effort live check of whether `count` of `gpu` can be
+        provisioned right now. Default assumes available (FakeProvider has
+        no real upstream to query)."""
+        return GpuAvailability(gpu=gpu, count=count, available=True)
 
     async def shutdown(self) -> None:
         """Kill everything. Called on gateway shutdown."""

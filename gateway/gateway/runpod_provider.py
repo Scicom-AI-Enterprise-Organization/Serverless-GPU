@@ -20,16 +20,20 @@ Optional:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 import uuid
 from typing import Any, Optional
 
 import httpx
 
-from .provider import Provider
+from .provider import GpuAvailability, Provider
 
 logger = logging.getLogger("gateway.runpod_provider")
+
+_AVAILABILITY_TTL_S = 30.0
 
 
 # Map app-spec GPU strings to RunPod gpuTypeIds. Strings come from the
@@ -142,6 +146,10 @@ class RunPodProvider(Provider):
         # machine_id (ours) → pod_id (RunPod's)
         self._pod_ids: dict[str, str] = {}
 
+        # availability cache: (gpu, count) -> (result, expiry_epoch)
+        self._avail_cache: dict[tuple[str, int], tuple[GpuAvailability, float]] = {}
+        self._avail_locks: dict[tuple[str, int], asyncio.Lock] = {}
+
     async def provision(self, app_id: str, model: str, gpu: str, env: dict[str, str]) -> str:
         machine_id = f"m-rp-{uuid.uuid4().hex[:8]}"
         pod_name = f"{self.name_prefix}-{app_id}-{machine_id}"
@@ -243,6 +251,117 @@ class RunPodProvider(Provider):
             if machine_id in (pod.get("name", "") or ""):
                 return pod["id"]
         return None
+
+    async def check_availability(self, gpu: str, count: int) -> GpuAvailability:
+        """Look up the GPU in /v1/gputypes and check stock per data center.
+
+        Cached for 30s per (gpu, count) with single-flight per-key lock.
+        """
+        key = (gpu, count)
+        now = time.time()
+        cached = self._avail_cache.get(key)
+        if cached is not None and cached[1] > now:
+            return cached[0]
+
+        lock = self._avail_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            cached = self._avail_cache.get(key)
+            if cached is not None and cached[1] > time.time():
+                return cached[0]
+
+            rp_gpu = _map_gpu(gpu)
+            try:
+                r = await self._client.get("/gputypes")
+            except Exception as e:
+                logger.warning("runpod-gputypes request failed: %s", e)
+                result = GpuAvailability(
+                    gpu=gpu, count=count, available=None,
+                    reason="Couldn't reach RunPod",
+                )
+                self._avail_cache[key] = (result, time.time() + 5.0)
+                return result
+
+            if r.status_code >= 400:
+                logger.warning("runpod-gputypes %s: %s", r.status_code, r.text[:200])
+                result = GpuAvailability(
+                    gpu=gpu, count=count, available=None,
+                    reason=f"RunPod gputypes returned {r.status_code}",
+                )
+                self._avail_cache[key] = (result, time.time() + 5.0)
+                return result
+
+            catalog = r.json() or []
+            if not isinstance(catalog, list):
+                catalog = catalog.get("data", []) if isinstance(catalog, dict) else []
+
+            match: Optional[dict[str, Any]] = None
+            for g in catalog:
+                if not isinstance(g, dict):
+                    continue
+                if g.get("id") == rp_gpu or g.get("displayName") == rp_gpu:
+                    match = g
+                    break
+
+            if match is None:
+                result = GpuAvailability(
+                    gpu=gpu, count=count, available=False,
+                    reason=f"{gpu} not offered on RunPod",
+                )
+                self._avail_cache[key] = (result, time.time() + _AVAILABILITY_TTL_S)
+                return result
+
+            dcs = match.get("dataCenters") or match.get("data_centers") or []
+            if not isinstance(dcs, list):
+                dcs = []
+            allowed_cloud = self.cloud_type.upper()
+            relevant = [
+                dc for dc in dcs
+                if isinstance(dc, dict) and (
+                    not dc.get("cloudType")
+                    or str(dc.get("cloudType", "")).upper() == allowed_cloud
+                )
+            ]
+
+            def _stock(dc: dict[str, Any]) -> int:
+                for k in ("availableGpuCount", "available_gpu_count", "stockStatus"):
+                    v = dc.get(k)
+                    if isinstance(v, int):
+                        return v
+                return 0
+
+            have_room = [dc for dc in relevant if _stock(dc) >= count]
+            if not have_room:
+                # If RunPod's REST doesn't expose stock counts (it sometimes doesn't),
+                # fall back to assuming the catalog entry implies availability.
+                if not any(_stock(dc) > 0 for dc in relevant):
+                    have_room = relevant
+                if not have_room:
+                    result = GpuAvailability(
+                        gpu=gpu, count=count, available=False,
+                        reason=f"No host with ≥{count}× {gpu} on RunPod {self.cloud_type}",
+                    )
+                    self._avail_cache[key] = (result, time.time() + _AVAILABILITY_TTL_S)
+                    return result
+
+            price = None
+            lowest = match.get("lowestPrice") or {}
+            if isinstance(lowest, dict):
+                for k in ("uninterruptablePrice", "minimumBidPrice"):
+                    v = lowest.get(k)
+                    if v is not None:
+                        try:
+                            price = float(v)
+                            break
+                        except (TypeError, ValueError):
+                            pass
+            regions = [str(dc.get("id")) for dc in have_room if dc.get("id")]
+
+            result = GpuAvailability(
+                gpu=gpu, count=count, available=True,
+                cheapest_price_hr=price, regions=regions,
+            )
+            self._avail_cache[key] = (result, time.time() + _AVAILABILITY_TTL_S)
+            return result
 
     async def shutdown(self) -> None:
         # Don't terminate pods on gateway shutdown — autoscaler decides scale-to-zero.

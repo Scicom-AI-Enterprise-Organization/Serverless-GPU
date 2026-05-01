@@ -432,6 +432,48 @@ async def set_user_role(
 
 # ----- apps (owner-scoped) -----
 
+@app.get("/v1/availability")
+async def get_gpu_availability(
+    request: Request,
+    gpu: str,
+    count: int = 1,
+    user: User = Depends(require_developer),
+):
+    """Live check whether `count` of `gpu` can be provisioned right now on
+    the active provider. UI uses this to render a green/red/yellow badge
+    next to the GPU picker. Provider-side caches keep upstream RPS bounded."""
+    if count < 1 or count > 8:
+        raise HTTPException(status_code=400, detail="count must be 1..8")
+    if not gpu or len(gpu) > 64:
+        raise HTTPException(status_code=400, detail="gpu name required (≤64 chars)")
+    provider = getattr(request.app.state, "provider", None)
+    if provider is None:
+        return {
+            "gpu": gpu, "count": count, "available": True,
+            "cheapest_price_hr": None, "regions": [], "reason": None,
+            "checked_at": time.time(), "provider": "fake",
+        }
+    try:
+        result = await provider.check_availability(gpu, count)
+    except Exception:
+        logger.exception("availability check failed for %s x%d", gpu, count)
+        return {
+            "gpu": gpu, "count": count, "available": None,
+            "cheapest_price_hr": None, "regions": [], "reason": "internal error",
+            "checked_at": time.time(), "provider": getattr(provider, "name", "unknown"),
+        }
+    return {
+        "gpu": result.gpu,
+        "count": result.count,
+        "available": result.available,
+        "cheapest_price_hr": result.cheapest_price_hr,
+        "regions": result.regions,
+        "reason": result.reason,
+        "checked_at": result.checked_at,
+        "provider": getattr(provider, "name", "unknown"),
+    }
+
+
 @app.post("/apps", response_model=CreateAppResponse)
 async def create_app(
     req: CreateAppRequest,
