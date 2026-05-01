@@ -550,6 +550,50 @@ async def get_app_endpoint(
     return _to_app_record(app)
 
 
+@app.get("/apps/{app_id}/status")
+async def get_app_status(
+    app_id: str,
+    request: Request,
+    user: User = Depends(require_developer),
+    session: AsyncSession = Depends(get_session),
+):
+    """Operational state for the overview tab: live worker count, queue depth,
+    and the most recent provision error (if any). Empty error means the
+    autoscaler is either idle or scaling cleanly."""
+    await _load_owned_app(session, app_id, user)
+    rdb = request.app.state.redis
+    queue_len = await rdb.llen(f"queue:{app_id}")
+    workers = await rdb.smembers(f"worker_index:{app_id}")
+    live_workers = 0
+    for mid in workers:
+        if await rdb.exists(f"worker:{mid}"):
+            live_workers += 1
+    err = await rdb.get(f"app:{app_id}:last_provision_error")
+    err_at_blob = await rdb.get(f"app:{app_id}:last_provision_error_at")
+    cooldown_blob = await rdb.get(f"app:{app_id}:provision_cooldown_until")
+    cooldown_remaining = 0
+    if cooldown_blob:
+        try:
+            remaining = float(cooldown_blob) - time.time()
+            cooldown_remaining = int(max(0, remaining))
+        except (TypeError, ValueError):
+            pass
+    err_at: Optional[float] = None
+    if err_at_blob:
+        try:
+            err_at = float(err_at_blob)
+        except (TypeError, ValueError):
+            pass
+    return {
+        "app_id": app_id,
+        "queue_len": queue_len,
+        "workers": live_workers,
+        "last_provision_error": err,
+        "last_provision_error_at": err_at,
+        "provision_cooldown_remaining_s": cooldown_remaining,
+    }
+
+
 @app.patch("/apps/{app_id}/autoscaler", response_model=AppRecord)
 async def update_app_autoscaler(
     app_id: str,

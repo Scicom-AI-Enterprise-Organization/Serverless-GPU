@@ -32,6 +32,8 @@ logger = logging.getLogger("gateway.autoscaler")
 
 TICK_S = 1.0
 REGISTRATION_TOKEN_TTL_S = 1800  # 30 min — covers slow ECR pulls + vLLM model load
+PROVISION_COOLDOWN_S = 60  # back off this long after a provider provision failure
+PROVISION_ERROR_TTL_S = 600  # how long the UI keeps showing the last error
 
 
 async def autoscaler_loop(
@@ -59,8 +61,13 @@ async def tick(
     async with sm() as session:
         result = await session.execute(select(App))
         apps = list(result.scalars().all())
+    # Reconcile per-app inside a per-app try/except so one bad app (provider
+    # rejecting its GPU spec, etc.) doesn't starve the others on this tick.
     for app in apps:
-        await _reconcile_app(rdb, provider, app)
+        try:
+            await _reconcile_app(rdb, provider, app)
+        except Exception:
+            logger.exception("autoscaler: reconcile failed for app=%s", app.app_id)
 
 
 async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: App) -> None:
@@ -92,6 +99,17 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
 
     if desired > current:
         from . import metrics as _metrics
+        # Cooldown: skip the provision attempt entirely if the last try failed
+        # recently. Otherwise we spam the upstream provider every tick when
+        # there's no inventory or our spec is wrong, which burns API quota
+        # and noses-up the gateway logs.
+        cooldown_until_blob = await rdb.get(f"app:{app_id}:provision_cooldown_until")
+        if cooldown_until_blob:
+            try:
+                if time.time() < float(cooldown_until_blob):
+                    return
+            except (TypeError, ValueError):
+                pass
         n_to_add = desired - current
         for _ in range(n_to_add):
             token = secrets.token_urlsafe(24)
@@ -108,9 +126,38 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
                     gpu_count=int(getattr(app, "gpu_count", 1) or 1),
                 )
                 _metrics.PROVISION_TOTAL.labels(provider=provider.name, ok="true").inc()
-            except Exception:
+                # Clear any stale error/cooldown after a successful provision.
+                await rdb.delete(
+                    f"app:{app_id}:last_provision_error",
+                    f"app:{app_id}:last_provision_error_at",
+                    f"app:{app_id}:provision_cooldown_until",
+                )
+            except Exception as e:
                 _metrics.PROVISION_TOTAL.labels(provider=provider.name, ok="false").inc()
-                raise
+                error_msg = (str(e) or repr(e))[:1000]
+                cooldown_until = time.time() + PROVISION_COOLDOWN_S
+                await rdb.set(
+                    f"app:{app_id}:provision_cooldown_until",
+                    str(cooldown_until),
+                    ex=PROVISION_COOLDOWN_S + 30,
+                )
+                await rdb.set(
+                    f"app:{app_id}:last_provision_error",
+                    error_msg,
+                    ex=PROVISION_ERROR_TTL_S,
+                )
+                await rdb.set(
+                    f"app:{app_id}:last_provision_error_at",
+                    str(time.time()),
+                    ex=PROVISION_ERROR_TTL_S,
+                )
+                logger.warning(
+                    "provision failed for app=%s gpu=%sx%d: %s — cooldown %ds",
+                    app_id, app.gpu,
+                    int(getattr(app, "gpu_count", 1) or 1),
+                    error_msg[:200], PROVISION_COOLDOWN_S,
+                )
+                return  # don't try the next slot in n_to_add this tick
             await rdb.set(
                 f"register_token:{machine_id}",
                 token,
