@@ -253,9 +253,12 @@ class RunPodProvider(Provider):
         return None
 
     async def check_availability(self, gpu: str, count: int) -> GpuAvailability:
-        """Look up the GPU in /v1/gputypes and check stock per data center.
+        """Query RunPod's GraphQL gpuTypes endpoint for live stock + price.
 
-        Cached for 30s per (gpu, count) with single-flight per-key lock.
+        RunPod's REST API (/v1/*) doesn't expose GPU listings — only GraphQL at
+        api.runpod.io/graphql does. We POST a single query that returns
+        stockStatus, availableGpuCounts, and lowestPrice for the requested
+        (gpu, count, cloudType). Cached 30s with single-flight lock.
         """
         key = (gpu, count)
         now = time.time()
@@ -270,10 +273,32 @@ class RunPodProvider(Provider):
                 return cached[0]
 
             rp_gpu = _map_gpu(gpu)
+            secure = self.cloud_type.upper() == "SECURE"
+            query = """
+            query GpuTypes($id: String, $count: Int!, $secure: Boolean!) {
+              gpuTypes(input: { id: $id }) {
+                id
+                displayName
+                memoryInGb
+                secureCloud
+                communityCloud
+                lowestPrice(input: { gpuCount: $count, secureCloud: $secure }) {
+                  stockStatus
+                  uninterruptablePrice
+                  minimumBidPrice
+                  availableGpuCounts
+                }
+              }
+            }
+            """
+            variables = {"id": rp_gpu, "count": count, "secure": secure}
             try:
-                r = await self._client.get("/gputypes")
+                r = await self._client.post(
+                    "https://api.runpod.io/graphql",
+                    json={"query": query, "variables": variables},
+                )
             except Exception as e:
-                logger.warning("runpod-gputypes request failed: %s", e)
+                logger.warning("runpod-gql request failed: %s", e)
                 result = GpuAvailability(
                     gpu=gpu, count=count, available=None,
                     reason="Couldn't reach RunPod",
@@ -282,27 +307,27 @@ class RunPodProvider(Provider):
                 return result
 
             if r.status_code >= 400:
-                logger.warning("runpod-gputypes %s: %s", r.status_code, r.text[:200])
+                logger.warning("runpod-gql %s: %s", r.status_code, r.text[:200])
                 result = GpuAvailability(
                     gpu=gpu, count=count, available=None,
-                    reason=f"RunPod gputypes returned {r.status_code}",
+                    reason=f"RunPod GraphQL returned {r.status_code}",
                 )
                 self._avail_cache[key] = (result, time.time() + 5.0)
                 return result
 
-            catalog = r.json() or []
-            if not isinstance(catalog, list):
-                catalog = catalog.get("data", []) if isinstance(catalog, dict) else []
+            payload = r.json() if r.content else {}
+            if payload.get("errors"):
+                msg = payload["errors"][0].get("message", "GraphQL error")[:120]
+                logger.warning("runpod-gql errors: %s", payload["errors"])
+                result = GpuAvailability(
+                    gpu=gpu, count=count, available=None,
+                    reason=f"RunPod: {msg}",
+                )
+                self._avail_cache[key] = (result, time.time() + 5.0)
+                return result
 
-            match: Optional[dict[str, Any]] = None
-            for g in catalog:
-                if not isinstance(g, dict):
-                    continue
-                if g.get("id") == rp_gpu or g.get("displayName") == rp_gpu:
-                    match = g
-                    break
-
-            if match is None:
+            types = (payload.get("data") or {}).get("gpuTypes") or []
+            if not types:
                 result = GpuAvailability(
                     gpu=gpu, count=count, available=False,
                     reason=f"{gpu} not offered on RunPod",
@@ -310,51 +335,53 @@ class RunPodProvider(Provider):
                 self._avail_cache[key] = (result, time.time() + _AVAILABILITY_TTL_S)
                 return result
 
-            dcs = match.get("dataCenters") or match.get("data_centers") or []
-            if not isinstance(dcs, list):
-                dcs = []
-            allowed_cloud = self.cloud_type.upper()
-            relevant = [
-                dc for dc in dcs
-                if isinstance(dc, dict) and (
-                    not dc.get("cloudType")
-                    or str(dc.get("cloudType", "")).upper() == allowed_cloud
+            entry = types[0] if isinstance(types[0], dict) else {}
+            # Ensure the GPU is offered on the cloud tier we use at all.
+            if secure and entry.get("secureCloud") is False:
+                result = GpuAvailability(
+                    gpu=gpu, count=count, available=False,
+                    reason=f"{gpu} not offered on RunPod SECURE",
                 )
-            ]
+                self._avail_cache[key] = (result, time.time() + _AVAILABILITY_TTL_S)
+                return result
+            if (not secure) and entry.get("communityCloud") is False:
+                result = GpuAvailability(
+                    gpu=gpu, count=count, available=False,
+                    reason=f"{gpu} not offered on RunPod COMMUNITY",
+                )
+                self._avail_cache[key] = (result, time.time() + _AVAILABILITY_TTL_S)
+                return result
 
-            def _stock(dc: dict[str, Any]) -> int:
-                for k in ("availableGpuCount", "available_gpu_count", "stockStatus"):
-                    v = dc.get(k)
-                    if isinstance(v, int):
-                        return v
-                return 0
+            lp = entry.get("lowestPrice") or {}
+            stock = lp.get("stockStatus")
+            counts = lp.get("availableGpuCounts") or []
 
-            have_room = [dc for dc in relevant if _stock(dc) >= count]
-            if not have_room:
-                # If RunPod's REST doesn't expose stock counts (it sometimes doesn't),
-                # fall back to assuming the catalog entry implies availability.
-                if not any(_stock(dc) > 0 for dc in relevant):
-                    have_room = relevant
-                if not have_room:
-                    result = GpuAvailability(
-                        gpu=gpu, count=count, available=False,
-                        reason=f"No host with ≥{count}× {gpu} on RunPod {self.cloud_type}",
-                    )
-                    self._avail_cache[key] = (result, time.time() + _AVAILABILITY_TTL_S)
-                    return result
+            if stock in (None, "None") or (counts and count not in counts):
+                reason = (
+                    f"No host with ≥{count}× {gpu} on RunPod {self.cloud_type}"
+                    if counts
+                    else f"No {gpu} in stock on RunPod {self.cloud_type}"
+                )
+                result = GpuAvailability(
+                    gpu=gpu, count=count, available=False, reason=reason,
+                )
+                self._avail_cache[key] = (result, time.time() + _AVAILABILITY_TTL_S)
+                return result
 
             price = None
-            lowest = match.get("lowestPrice") or {}
-            if isinstance(lowest, dict):
-                for k in ("uninterruptablePrice", "minimumBidPrice"):
-                    v = lowest.get(k)
-                    if v is not None:
-                        try:
-                            price = float(v)
-                            break
-                        except (TypeError, ValueError):
-                            pass
-            regions = [str(dc.get("id")) for dc in have_room if dc.get("id")]
+            for k in ("uninterruptablePrice", "minimumBidPrice"):
+                v = lp.get(k)
+                if v is not None:
+                    try:
+                        price = float(v)
+                        break
+                    except (TypeError, ValueError):
+                        pass
+
+            # RunPod GraphQL doesn't expose per-DC breakdown in this query; the
+            # stockStatus value ("High"/"Medium"/"Low") goes into the regions
+            # field as a coarse signal so the UI can surface it.
+            regions = [f"stock:{stock}"] if stock else []
 
             result = GpuAvailability(
                 gpu=gpu, count=count, available=True,
