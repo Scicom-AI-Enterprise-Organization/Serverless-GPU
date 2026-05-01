@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { ArrowUpRight, Copy, Eye, EyeOff, Loader2, Pencil, RotateCw } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Copy, Eye, EyeOff, Loader2, Pencil, RotateCw } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -19,12 +19,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { AppRecord } from "@/lib/types";
-import { gateway } from "@/lib/gateway";
+import { gateway, type AppStatus } from "@/lib/gateway";
 import { restartEndpoint, updateAutoscaler } from "../../actions";
 
 export function OverviewTab({ app }: { app: AppRecord }) {
   return (
     <div className="space-y-4">
+      <ProvisionErrorBanner appId={app.app_id} />
       <RequestPanel app={app} />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -35,6 +36,72 @@ export function OverviewTab({ app }: { app: AppRecord }) {
       <EngineArgsCard app={app} />
     </div>
   );
+}
+
+function ProvisionErrorBanner({ appId }: { appId: string }) {
+  const [status, setStatus] = useState<AppStatus | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const res = await fetch(
+          `/api/proxy/apps/${encodeURIComponent(appId)}/status`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as AppStatus;
+        if (!cancelled) setStatus(data);
+      } catch {
+        // best-effort; banner stays hidden on failure
+      }
+    }
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [appId]);
+
+  if (!status?.last_provision_error) return null;
+
+  const cooldown = status.provision_cooldown_remaining_s;
+  const at = status.last_provision_error_at
+    ? new Date(status.last_provision_error_at * 1000)
+    : null;
+  const ago = at ? formatAgo(at) : null;
+
+  return (
+    <div className="flex items-start gap-3 rounded-md border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+      <div className="flex-1 space-y-1">
+        <div className="font-medium">
+          Couldn't start a worker
+          {ago ? <span className="text-xs font-normal opacity-75"> · {ago}</span> : null}
+        </div>
+        <div className="font-mono text-xs leading-relaxed opacity-90 break-words">
+          {status.last_provision_error}
+        </div>
+        {cooldown > 0 ? (
+          <div className="text-xs opacity-75">
+            Auto-retry in {cooldown}s. Pick a different GPU / count if this combo isn't in stock.
+          </div>
+        ) : (
+          <div className="text-xs opacity-75">
+            The autoscaler will retry on the next request — or change GPU / count above.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatAgo(d: Date): string {
+  const s = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
 }
 
 function RequestPanel({ app }: { app: AppRecord }) {
@@ -257,7 +324,7 @@ function DetailCard({ app }: { app: AppRecord }) {
             </span>
           }
         />
-        <Row label="GPU count" value="1" />
+        <Row label="GPU count" value={`×${app.gpu_count ?? 1}`} />
         <Row label="GPU types" value={<span className="font-mono">{app.gpu}</span>} />
       </CardContent>
     </Card>

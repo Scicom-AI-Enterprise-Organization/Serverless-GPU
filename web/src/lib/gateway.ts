@@ -89,4 +89,15 @@ export const gateway = {
     request<GpuAvailability>(
       `/v1/availability?gpu=${encodeURIComponent(gpu)}&count=${count}`,
     ),
+  getAppStatus: (id: string) =>
+    request<AppStatus>(`/apps/${encodeURIComponent(id)}/status`),
+};
+
+export type AppStatus = {
+  app_id: string;
+  queue_len: number;
+  workers: number;
+  last_provision_error: string | null;
+  last_provision_error_at: number | null;
+  provision_cooldown_remaining_s: number;
 };
