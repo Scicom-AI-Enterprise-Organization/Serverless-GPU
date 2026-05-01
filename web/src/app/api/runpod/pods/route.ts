@@ -1,36 +1,37 @@
-// Server-side proxy to RunPod's REST API. Filters pods by the gateway's
-// naming convention (`<prefix>-<appId>-<machine_id>`) so the WorkersTab
-// only sees pods belonging to the requested endpoint.
+// Server-side proxy to RunPod for the WorkersTab. We use GraphQL
+// (api.runpod.io/graphql) instead of REST (rest.runpod.io/v1/pods) because
+// the REST response leaves `machine: {}` empty — no gpuTypeId, no location.
+// GraphQL `myself.pods` returns machine.gpuTypeId, machine.location, and
+// secureCloud in a single call.
 //
 // RUNPOD_API_KEY stays server-side. Browser hits /api/runpod/pods?app=<id>.
 
 import { NextRequest, NextResponse } from "next/server";
 
-const RUNPOD_BASE =
-  process.env.RUNPOD_API_BASE?.replace(/\/$/, "") ?? "https://rest.runpod.io/v1";
+const RUNPOD_GQL =
+  process.env.RUNPOD_GRAPHQL_URL ?? "https://api.runpod.io/graphql";
 const NAME_PREFIX = process.env.RUNPOD_NAME_PREFIX ?? "serverlessgpu";
 
-type RunpodMachine = {
+type GqlMachine = {
   gpuTypeId?: string;
-  gpuTypeIds?: string[];
-  vcpuCount?: number;
-  memoryInGb?: number;
   dataCenterId?: string;
+  location?: string;
+  podHostId?: string;
+  secureCloud?: boolean;
 };
 
-type RunpodPod = {
+type GqlPod = {
   id: string;
   name: string;
   desiredStatus?: string;
-  currentStatus?: string;
-  dataCenterId?: string;
-  machine?: RunpodMachine;
+  lastStatusChange?: string;
   gpuCount?: number;
   vcpuCount?: number;
   memoryInGb?: number;
   containerDiskInGb?: number;
   costPerHr?: number;
   createdAt?: string;
+  machine?: GqlMachine;
 };
 
 export type WorkerRowResponse = {
@@ -50,6 +51,32 @@ export type WorkerRowResponse = {
 
 const apiKey = () => process.env.RUNPOD_API_KEY ?? "";
 
+const QUERY = `
+query MyPods {
+  myself {
+    pods {
+      id
+      name
+      desiredStatus
+      lastStatusChange
+      gpuCount
+      vcpuCount
+      memoryInGb
+      containerDiskInGb
+      costPerHr
+      createdAt
+      machine {
+        gpuTypeId
+        dataCenterId
+        location
+        podHostId
+        secureCloud
+      }
+    }
+  }
+}
+`;
+
 export async function GET(req: NextRequest) {
   const key = apiKey();
   if (!key) {
@@ -65,8 +92,13 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const r = await fetch(`${RUNPOD_BASE}/pods`, {
-      headers: { Authorization: `Bearer ${key}` },
+    const r = await fetch(RUNPOD_GQL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query: QUERY }),
       cache: "no-store",
     });
     if (!r.ok) {
@@ -76,13 +108,21 @@ export async function GET(req: NextRequest) {
         { status: 502 },
       );
     }
-    const pods = (await r.json()) as RunpodPod[] | null;
+    const payload = (await r.json()) as {
+      data?: { myself?: { pods?: GqlPod[] } };
+      errors?: { message: string }[];
+    };
+    if (payload.errors?.length) {
+      return NextResponse.json(
+        { error: `runpod graphql: ${payload.errors[0].message}` },
+        { status: 502 },
+      );
+    }
+    const pods = payload.data?.myself?.pods ?? [];
     const namePrefix = `${NAME_PREFIX}-${appId}-`;
-
-    const rows: WorkerRowResponse[] = (pods ?? [])
+    const rows: WorkerRowResponse[] = pods
       .filter((p) => (p.name ?? "").startsWith(namePrefix))
       .map(toRow);
-
     return NextResponse.json({ workers: rows, prefix: namePrefix });
   } catch (e) {
     return NextResponse.json(
@@ -92,29 +132,30 @@ export async function GET(req: NextRequest) {
   }
 }
 
-function toRow(pod: RunpodPod): WorkerRowResponse {
+function toRow(pod: GqlPod): WorkerRowResponse {
   const idx = pod.name.indexOf("m-rp-");
   const machineId = idx >= 0 ? pod.name.slice(idx) : pod.name;
 
-  const region = pod.dataCenterId ?? pod.machine?.dataCenterId ?? "";
-  const regionCode = region.split("-")[0] || region.slice(0, 2).toUpperCase();
+  // Datacenter ids are empty for community-cloud pods (RunPod hides them).
+  // Fall back to country code from machine.location ("CA", "US", "DE"…).
+  const dc = pod.machine?.dataCenterId ?? "";
+  const country = (pod.machine?.location ?? "").trim();
+  const region = dc || country || (pod.machine?.secureCloud === false ? "community" : "");
+  const regionCode = (dc.split("-")[0] || country || region).slice(0, 6).toUpperCase();
 
-  const gpuId =
-    pod.machine?.gpuTypeId ??
-    pod.machine?.gpuTypeIds?.[0] ??
-    "—";
+  const gpuId = pod.machine?.gpuTypeId ?? "—";
 
   return {
     machine_id: machineId,
     pod_id: pod.id,
-    status: mapStatus(pod.desiredStatus, pod.currentStatus),
-    raw_status: (pod.currentStatus || pod.desiredStatus || "").toLowerCase(),
+    status: mapStatus(pod.desiredStatus, undefined),
+    raw_status: (pod.desiredStatus || "").toLowerCase(),
     region,
     region_code: regionCode,
     gpu: prettyGpu(gpuId),
     gpu_count: pod.gpuCount ?? 1,
-    vcpus: pod.vcpuCount ?? pod.machine?.vcpuCount ?? 0,
-    ram_gb: pod.memoryInGb ?? pod.machine?.memoryInGb ?? 0,
+    vcpus: pod.vcpuCount ?? 0,
+    ram_gb: pod.memoryInGb ?? 0,
     disk_gb: pod.containerDiskInGb ?? 0,
     created_at: pod.createdAt ?? null,
   };
