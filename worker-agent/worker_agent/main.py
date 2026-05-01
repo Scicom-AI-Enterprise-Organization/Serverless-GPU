@@ -96,6 +96,69 @@ async def handle_stream(mode: str, model_id: str, payload: dict, endpoint: str =
     yield {"error": f"unknown WORKER_MODE: {mode}", "done": True}
 
 
+async def log_shipper_loop(
+    gateway_url: str,
+    machine_id: str,
+    app_id: str,
+    log_path: str,
+    drain_event: asyncio.Event,
+) -> None:
+    """Tail the vLLM stdout file and ship batches to the gateway.
+
+    Tracks a byte offset across iterations. If the file is rotated/truncated
+    we reset to 0. Failures are logged but never raise — log shipping is
+    best-effort, never block the worker."""
+    url = f"{gateway_url.rstrip('/')}/workers/logs"
+    offset = 0
+    leftover = b""
+    BATCH_INTERVAL_S = 2.0
+    MAX_BATCH_LINES = 200
+    MAX_LINE_BYTES = 4096
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        while not drain_event.is_set():
+            try:
+                if not os.path.exists(log_path):
+                    # File hasn't been created yet (vLLM still booting).
+                    try:
+                        await asyncio.wait_for(drain_event.wait(), timeout=BATCH_INTERVAL_S)
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                size = os.path.getsize(log_path)
+                if size < offset:
+                    # Truncated or rotated — start over from the top.
+                    offset = 0
+                    leftover = b""
+                if size > offset:
+                    with open(log_path, "rb") as f:
+                        f.seek(offset)
+                        chunk = f.read(size - offset)
+                    offset = size
+                    data = leftover + chunk
+                    parts = data.split(b"\n")
+                    leftover = parts[-1]
+                    new_lines = parts[:-1]
+                    # Ship in batches so a backlog doesn't produce one giant POST.
+                    for i in range(0, len(new_lines), MAX_BATCH_LINES):
+                        batch = new_lines[i : i + MAX_BATCH_LINES]
+                        body = {
+                            "machine_id": machine_id,
+                            "app_id": app_id,
+                            "lines": [b[:MAX_LINE_BYTES].decode("utf-8", errors="replace") for b in batch],
+                        }
+                        try:
+                            await client.post(url, json=body)
+                        except httpx.HTTPError as e:
+                            logger.warning("log shipper post failed: %s", e)
+            except Exception:
+                logger.exception("log shipper iteration failed")
+            try:
+                await asyncio.wait_for(drain_event.wait(), timeout=BATCH_INTERVAL_S)
+            except asyncio.TimeoutError:
+                pass
+
+
 async def heartbeat_loop(gateway_url: str, machine_id: str, app_id: str, drain_event: asyncio.Event) -> None:
     """Heartbeat to gateway every 5s. Set drain_event if gateway tells us to drain."""
     url = f"{gateway_url.rstrip('/')}/workers/heartbeat"
@@ -230,20 +293,30 @@ async def main_async() -> None:
 
     rdb = redis_async.from_url(redis_url, decode_responses=True)
     drain_event = asyncio.Event()
+    log_path = os.environ.get("WORKER_LOG_PATH", "/var/log/vllm.log")
     try:
         await rdb.ping()
         hb_task = asyncio.create_task(
             heartbeat_loop(gateway_url, machine_id, app_id, drain_event)
         )
+        # Skip log shipping in fake mode — there's no vllm.log to tail.
+        log_task: asyncio.Task[Any] | None = None
+        if mode != "fake":
+            log_task = asyncio.create_task(
+                log_shipper_loop(gateway_url, machine_id, app_id, log_path, drain_event)
+            )
         try:
             await poll_loop(rdb, f"queue:{app_id}", machine_id, mode, model_id, drain_event)
         finally:
             drain_event.set()
-            hb_task.cancel()
-            try:
-                await hb_task
-            except (asyncio.CancelledError, BaseException):
-                pass
+            for t in (hb_task, log_task):
+                if t is None:
+                    continue
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, BaseException):
+                    pass
     finally:
         await rdb.aclose()
 

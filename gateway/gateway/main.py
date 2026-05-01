@@ -110,6 +110,17 @@ class WorkerHeartbeatRequest(BaseModel):
     status: str = "ready"
 
 
+class WorkerLogsRequest(BaseModel):
+    machine_id: str
+    app_id: str
+    lines: list[str] = Field(default_factory=list)
+
+
+# Per-worker container log retention. The worker-agent ships batches every
+# few seconds; we cap the list so a chatty worker can't blow up Redis.
+WORKER_LOGS_CAP = 5000
+
+
 class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
     password: str = Field(min_length=8, max_length=128)
@@ -1228,6 +1239,63 @@ async def heartbeat(req: WorkerHeartbeatRequest, request: Request):
     await rdb.sadd(f"worker_index:{req.app_id}", req.machine_id)
     drain = await rdb.exists(f"worker:{req.machine_id}:drain")
     return {"ok": True, "drain": bool(drain)}
+
+
+@app.post("/workers/logs")
+async def ingest_worker_logs(req: WorkerLogsRequest, request: Request):
+    """Worker-agent ships batches of vLLM stdout lines here. We cap the list
+    so a chatty worker can't fill Redis. No auth — workers are identified by
+    machine_id, same trust model as /workers/heartbeat."""
+    if not req.lines:
+        return {"ok": True, "stored": 0}
+    rdb = request.app.state.redis
+    key = f"worker_logs:{req.machine_id}"
+    # Newest first (LPUSH); LTRIM keeps only the most recent N. Each line is
+    # bounded to 4 KB to keep one runaway log line from eating the cap budget.
+    truncated = [l[:4096] for l in req.lines if l]
+    if not truncated:
+        return {"ok": True, "stored": 0}
+    await rdb.lpush(key, *reversed(truncated))
+    await rdb.ltrim(key, 0, WORKER_LOGS_CAP - 1)
+    # 1h TTL so logs naturally expire after the worker is gone.
+    await rdb.expire(key, 3600)
+    return {"ok": True, "stored": len(truncated)}
+
+
+@app.get("/workers/{machine_id}/logs")
+async def get_worker_logs(
+    machine_id: str,
+    request: Request,
+    tail: int = 300,
+    user: User = Depends(require_developer),
+    session: AsyncSession = Depends(get_session),
+):
+    """Return the last `tail` container-stdout lines for a worker. Auth: the
+    requesting user must own the app this worker belongs to."""
+    if tail < 1 or tail > WORKER_LOGS_CAP:
+        raise HTTPException(status_code=400, detail=f"tail must be 1..{WORKER_LOGS_CAP}")
+    rdb = request.app.state.redis
+    state_blob = await rdb.get(f"worker:{machine_id}")
+    if not state_blob:
+        raise HTTPException(status_code=404, detail="worker not found or expired")
+    try:
+        state = json.loads(state_blob)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="worker state corrupt")
+    app_id = state.get("app_id")
+    if not app_id:
+        raise HTTPException(status_code=500, detail="worker missing app_id")
+    # Ownership check — same pattern as _load_owned_app.
+    target_app = await _load_owned_app(session, app_id, user)
+    raw = await rdb.lrange(f"worker_logs:{machine_id}", 0, tail - 1)
+    # Stored newest-first; flip to chronological for the UI.
+    lines = list(reversed(raw))
+    return {
+        "machine_id": machine_id,
+        "app_id": target_app.app_id,
+        "lines": lines,
+        "count": len(lines),
+    }
 
 
 def run():

@@ -38,15 +38,25 @@ fi
 
 VLLM_PORT="${VLLM_PORT:-8000}"
 VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:-}"
+WORKER_LOG_PATH="${WORKER_LOG_PATH:-/var/log/vllm.log}"
+mkdir -p "$(dirname "$WORKER_LOG_PATH")"
+: > "$WORKER_LOG_PATH"
+export WORKER_LOG_PATH
 
-echo "[entrypoint] starting vllm: model=$MODEL_ID served-as=$APP_ID port=$VLLM_PORT extra=$VLLM_EXTRA_ARGS"
-python3 -m vllm.entrypoints.openai.api_server \
+echo "[entrypoint] starting vllm: model=$MODEL_ID served-as=$APP_ID port=$VLLM_PORT extra=$VLLM_EXTRA_ARGS log=$WORKER_LOG_PATH"
+# stdbuf forces line-buffered output so the worker-agent's log shipper sees
+# vllm output as it's produced instead of in 4-KB stdio chunks. Output goes
+# straight to the log file (the agent tails it); we also background a tail
+# so anyone attached to the container can still see vllm's stdout.
+stdbuf -oL -eL python3 -m vllm.entrypoints.openai.api_server \
   --model "$MODEL_ID" \
   --served-model-name "$APP_ID" \
   --port "$VLLM_PORT" \
   $VLLM_EXTRA_ARGS \
-  &
+  > "$WORKER_LOG_PATH" 2>&1 &
 VLLM_PID=$!
+tail -F "$WORKER_LOG_PATH" &
+TAIL_PID=$!
 
 # Wait up to 10 minutes for vllm to be ready (large models take a while)
 echo "[entrypoint] waiting for vllm /health on :$VLLM_PORT ..."
@@ -62,8 +72,8 @@ for i in $(seq 1 600); do
   sleep 1
 done
 
-# Worker-agent runs in foreground; if it exits, kill vllm too.
-trap 'kill -TERM "$VLLM_PID" 2>/dev/null || true' EXIT
+# Worker-agent runs in foreground; if it exits, kill vllm + tail too.
+trap 'kill -TERM "$VLLM_PID" "$TAIL_PID" 2>/dev/null || true' EXIT
 
 echo "[entrypoint] starting worker-agent: app=$APP_ID machine=$MACHINE_ID"
 exec python3 -m worker_agent.main

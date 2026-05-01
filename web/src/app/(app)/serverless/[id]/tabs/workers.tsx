@@ -245,7 +245,10 @@ function WorkerRow({ w }: { w: WorkerRow }) {
   );
 }
 
+type LogSource = "gateway" | "container";
+
 function WorkerLogs({ machineId }: { machineId: string }) {
+  const [source, setSource] = useState<LogSource>("gateway");
   const [lines, setLines] = useState<string[]>([]);
   const [err, setErr] = useState<{ msg: string; hint?: string } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -253,15 +256,26 @@ function WorkerLogs({ machineId }: { machineId: string }) {
 
   const fetchLogs = useCallback(async () => {
     try {
-      const r = await fetch(
-        `/api/cluster/worker-logs?machine_id=${encodeURIComponent(machineId)}&tail=300`,
-        { cache: "no-store" },
-      );
-      const body = (await r.json()) as { lines?: string[]; error?: string; hint?: string };
+      const url =
+        source === "gateway"
+          ? `/api/cluster/worker-logs?machine_id=${encodeURIComponent(machineId)}&tail=300`
+          : `/api/proxy/workers/${encodeURIComponent(machineId)}/logs?tail=300`;
+      const r = await fetch(url, { cache: "no-store" });
+      const text = await r.text();
       if (!r.ok) {
-        setErr({ msg: body.error ?? r.statusText, hint: body.hint });
+        let msg = r.statusText;
+        let hint: string | undefined;
+        try {
+          const body = JSON.parse(text) as { error?: string; hint?: string; detail?: string };
+          msg = body.error ?? body.detail ?? msg;
+          hint = body.hint;
+        } catch {
+          if (text) msg = text;
+        }
+        setErr({ msg, hint });
         return;
       }
+      const body = JSON.parse(text) as { lines?: string[] };
       setErr(null);
       setLines(body.lines ?? []);
     } catch (e) {
@@ -269,7 +283,13 @@ function WorkerLogs({ machineId }: { machineId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [machineId]);
+  }, [machineId, source]);
+
+  useEffect(() => {
+    setLoading(true);
+    setLines([]);
+    setErr(null);
+  }, [source]);
 
   useEffect(() => {
     fetchLogs();
@@ -281,10 +301,29 @@ function WorkerLogs({ machineId }: { machineId: string }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <div className="flex items-center gap-3">
-          <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-primary">
-            gateway events
-          </span>
+        <div className="flex items-center gap-2">
+          <div className="inline-flex rounded-md border border-border p-0.5">
+            <button
+              type="button"
+              onClick={() => setSource("gateway")}
+              className={cn(
+                "rounded px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                source === "gateway" ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              gateway events
+            </button>
+            <button
+              type="button"
+              onClick={() => setSource("container")}
+              className={cn(
+                "rounded px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                source === "container" ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              container logs
+            </button>
+          </div>
           <span className="font-mono">machine = {machineId}</span>
           {loading && <Loader2 className="h-3 w-3 animate-spin" />}
         </div>
@@ -311,7 +350,11 @@ function WorkerLogs({ machineId }: { machineId: string }) {
         </div>
       ) : lines.length === 0 ? (
         <div className="rounded-md border border-dashed border-border bg-background/40 px-3 py-4 text-center text-xs text-muted-foreground">
-          {loading ? "loading…" : "no gateway events for this worker yet"}
+          {loading
+            ? "loading…"
+            : source === "gateway"
+              ? "no gateway events for this worker yet"
+              : "no container logs yet — vLLM may still be booting, or this worker pre-dates the log shipper"}
         </div>
       ) : (
         <pre className="max-h-72 overflow-auto rounded-md border border-border bg-background/60 p-3 font-mono text-[11px] leading-relaxed scrollbar-thin">
@@ -322,10 +365,19 @@ function WorkerLogs({ machineId }: { machineId: string }) {
       )}
 
       <p className="text-[10px] leading-relaxed text-muted-foreground">
-        Source: <code className="font-mono">kubectl logs deploy/serverlessgpu-gateway | grep {machineId}</code>.
-        These are <strong>gateway-side</strong> events (provision, register, scale,
-        terminate). Container stdout from the worker pod itself isn&apos;t available — RunPod&apos;s
-        public API has no logs endpoint.
+        {source === "gateway" ? (
+          <>
+            Source: <code className="font-mono">kubectl logs deploy/serverlessgpu-gateway | grep {machineId}</code>.
+            These are <strong>gateway-side</strong> events (provision, register, scale,
+            terminate).
+          </>
+        ) : (
+          <>
+            Source: vLLM <code className="font-mono">stdout/stderr</code> shipped from the
+            worker container by the bundled log-shipper. RunPod&apos;s public API has no logs
+            endpoint, so this is the only way to see container output.
+          </>
+        )}
       </p>
     </div>
   );
