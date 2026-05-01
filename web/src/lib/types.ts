@@ -11,6 +11,7 @@ export type AppRecord = {
   name: string;
   model: string;
   gpu: string;
+  gpu_count: number;
   autoscaler: AutoscalerSpec;
   cpu: number;
   memory: string;
@@ -24,6 +25,7 @@ export type CreateAppRequest = {
   name: string;
   model: string;
   gpu: string;
+  gpu_count?: number;
   autoscaler?: Partial<AutoscalerSpec>;
   cpu?: number;
   memory?: string;

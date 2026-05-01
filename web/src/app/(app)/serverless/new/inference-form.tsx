@@ -15,7 +15,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import { deployEndpoint } from "../actions";
+import { AvailabilityBadge } from "@/components/availability-badge";
+import { useGpuAvailability } from "@/lib/use-gpu-availability";
 
 // vLLM is what the live RunPod template runs. SGLang is a placeholder for a
 // future template — keep it disabled so the option is visible but inert.
@@ -24,15 +27,66 @@ const FRAMEWORKS = [
   { value: "sglang", label: "SGLang (coming soon)", available: false },
 ] as const;
 
-// `vramGb` and `fits` hints are surfaced so users can size the GPU against
-// their model — vLLM will OOM on load if weights + KV cache exceed VRAM.
-const GPU_CHOICES = [
-  { value: "rtx3090", label: "RTX 3090 (24 GB)", fits: "up to ~7B FP16 / ~13B 4-bit" },
-  { value: "A10-24GB", label: "A10G (24 GB)", fits: "up to ~7B FP16 / ~13B 4-bit" },
-  { value: "L40S-48GB", label: "L40S (48 GB)", fits: "up to ~13B FP16 / ~30B 4-bit" },
-  { value: "A100-80GB", label: "A100 (80 GB)", fits: "up to ~30B FP16 / ~70B 4-bit" },
-  { value: "H100-80GB", label: "H100 (80 GB)", fits: "up to ~30B FP16 / ~70B 4-bit" },
+// Curated RunPod GPU catalog — values match runpod_provider._GPU_NAME_MAP.
+// vramGb feeds the dynamic capacity hint (recomputed with gpuCount).
+// Catalog last reviewed: 2026-05.
+type GpuChoice = { value: string; label: string; group: string; vramGb: number };
+const GPU_CHOICES: GpuChoice[] = [
+  // Datacenter — current gen
+  { value: "B200", label: "B200 (180 GB)", group: "Datacenter — current", vramGb: 180 },
+  { value: "H200", label: "H200 (141 GB)", group: "Datacenter — current", vramGb: 141 },
+  { value: "H100", label: "H100 SXM (80 GB)", group: "Datacenter — current", vramGb: 80 },
+  { value: "H100-PCIe", label: "H100 PCIe (80 GB)", group: "Datacenter — current", vramGb: 80 },
+  { value: "H100-NVL", label: "H100 NVL (94 GB)", group: "Datacenter — current", vramGb: 94 },
+  { value: "MI300X", label: "MI300X (192 GB)", group: "Datacenter — current", vramGb: 192 },
+  // Datacenter — Ampere
+  { value: "A100", label: "A100 PCIe (80 GB)", group: "Datacenter — Ampere", vramGb: 80 },
+  { value: "A100-SXM", label: "A100 SXM (80 GB)", group: "Datacenter — Ampere", vramGb: 80 },
+  { value: "A100-40G", label: "A100 (40 GB)", group: "Datacenter — Ampere", vramGb: 40 },
+  { value: "A40", label: "A40 (48 GB)", group: "Datacenter — Ampere", vramGb: 48 },
+  { value: "A10", label: "A10 (24 GB)", group: "Datacenter — Ampere", vramGb: 24 },
+  // Datacenter — Ada
+  { value: "L40S", label: "L40S (48 GB)", group: "Datacenter — Ada", vramGb: 48 },
+  { value: "L40", label: "L40 (48 GB)", group: "Datacenter — Ada", vramGb: 48 },
+  { value: "L4", label: "L4 (24 GB)", group: "Datacenter — Ada", vramGb: 24 },
+  // Workstation
+  { value: "RTX6000-Ada", label: "RTX 6000 Ada (48 GB)", group: "Workstation", vramGb: 48 },
+  { value: "A6000", label: "RTX A6000 (48 GB)", group: "Workstation", vramGb: 48 },
+  { value: "A5000", label: "RTX A5000 (24 GB)", group: "Workstation", vramGb: 24 },
+  { value: "A4000", label: "RTX A4000 (16 GB)", group: "Workstation", vramGb: 16 },
+  // Consumer
+  { value: "RTX5090", label: "RTX 5090 (32 GB)", group: "Consumer", vramGb: 32 },
+  { value: "RTX4090", label: "RTX 4090 (24 GB)", group: "Consumer", vramGb: 24 },
+  { value: "RTX3090Ti", label: "RTX 3090 Ti (24 GB)", group: "Consumer", vramGb: 24 },
+  { value: "RTX3090", label: "RTX 3090 (24 GB)", group: "Consumer", vramGb: 24 },
 ];
+
+const GPU_COUNT_CHOICES = [1, 2, 4, 8] as const;
+
+// Estimate the largest model that fits given VRAM budget. Rough formula
+// calibrated against vLLM defaults at moderate context (~4-8k) and small
+// batches; assumes ~45% of total VRAM is consumed by KV cache, activations,
+// and framework overhead, leaving ~55% for weights.
+//
+//   weights_budget = total_vram * 0.55
+//   FP16: 2 bytes/param  → max_B = budget / 2
+//   4-bit (AWQ/GPTQ ~0.6 effective): max_B = budget / 0.6
+//
+// Real-world capacity drops fast at long context — these are upper bounds.
+function capacityHint(vramPerGpu: number, count: number): string {
+  const total = vramPerGpu * count;
+  const weightsBudget = total * 0.55;
+  const fp16B = weightsBudget / 2;
+  const q4B = weightsBudget / 0.6;
+  const fp16Str = fp16B >= 100 ? `${Math.round(fp16B / 10) * 10}B` : `${Math.round(fp16B)}B`;
+  const q4Str = q4B >= 100 ? `${Math.round(q4B / 10) * 10}B` : `${Math.round(q4B)}B`;
+  const totalStr = total >= 100 ? `${Math.round(total)} GB` : `${total} GB`;
+  const tpHint =
+    count === 1
+      ? ""
+      : ` · TP=${count} sharding`;
+  return `${totalStr} VRAM${tpHint} · fits ~${fp16Str} FP16 / ~${q4Str} 4-bit (KV-cache budgeted)`;
+}
 
 const MAX_WORKERS = 1;
 
@@ -70,7 +124,8 @@ export function InferenceForm() {
   const [framework, setFramework] = useState("vllm");
   const [name, setName] = useState(suggestName());
   const [model, setModel] = useState("");
-  const [gpu, setGpu] = useState(GPU_CHOICES[0].value);
+  const [gpu, setGpu] = useState("RTX3090");
+  const [gpuCount, setGpuCount] = useState<number>(1);
   const [idleInput, setIdleInput] = useState("");
   const [alwaysOn, setAlwaysOn] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -92,6 +147,10 @@ export function InferenceForm() {
     intFieldInvalid(vllm.max_num_seqs) ||
     intFieldInvalid(vllm.tensor_parallel_size);
 
+  const availability = useGpuAvailability(gpu, gpuCount, true);
+  const explicitlyUnavailable =
+    availability.status === "ok" && availability.data.available === false;
+
   const parsedIdle = Number.parseInt(idleInput, 10);
   const idleInvalid =
     !alwaysOn && (!Number.isFinite(parsedIdle) || parsedIdle < 1 || parsedIdle > 86400);
@@ -111,12 +170,20 @@ export function InferenceForm() {
       toast.error("Fix the invalid values in Advanced options.");
       return;
     }
+    if (explicitlyUnavailable) {
+      const reason =
+        (availability.status === "ok" && availability.data.reason) ||
+        `${gpu}×${gpuCount} isn't available on the active provider right now.`;
+      toast.error(reason);
+      return;
+    }
     const vllmArgs = buildVllmArgs(vllm);
     startTransition(async () => {
       const res = await deployEndpoint({
         name: slugify(name),
         model: model.trim(),
         gpu,
+        gpu_count: gpuCount,
         autoscaler: {
           max_containers: MAX_WORKERS,
           idle_timeout_s: alwaysOn ? 0 : parsedIdle,
@@ -160,33 +227,54 @@ export function InferenceForm() {
           </Select>
         </Field>
 
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Endpoint name" required>
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="my-endpoint"
-              className="bg-muted"
+        <Field
+          label="GPU"
+          hint={(() => {
+            const g = GPU_CHOICES.find((c) => c.value === gpu);
+            return g ? capacityHint(g.vramGb, gpuCount) : undefined;
+          })()}
+          extra={<AvailabilityBadge state={availability} count={gpuCount} />}
+        >
+          <div className="flex gap-2">
+            <SearchableSelect
+              className="flex-1"
+              value={gpu}
+              onChange={setGpu}
+              options={GPU_CHOICES.map((g) => ({
+                value: g.value,
+                label: g.label,
+                group: g.group,
+                hint: capacityHint(g.vramGb, 1),
+              }))}
+              placeholder="Choose a GPU"
+              searchPlaceholder="Search GPUs (e.g. h100, 24gb, ada)…"
             />
-          </Field>
-          <Field
-            label="GPU"
-            hint={GPU_CHOICES.find((g) => g.value === gpu)?.fits}
-          >
-            <Select value={gpu} onValueChange={setGpu}>
-              <SelectTrigger className="w-full">
+            <Select
+              value={String(gpuCount)}
+              onValueChange={(v) => setGpuCount(Number.parseInt(v, 10))}
+            >
+              <SelectTrigger className="w-24 shrink-0">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {GPU_CHOICES.map((g) => (
-                  <SelectItem key={g.value} value={g.value}>
-                    {g.label}
+                {GPU_COUNT_CHOICES.map((n) => (
+                  <SelectItem key={n} value={String(n)}>
+                    ×{n}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-          </Field>
-        </div>
+          </div>
+        </Field>
+
+        <Field label="Endpoint name" required>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="my-endpoint"
+            className="bg-muted"
+          />
+        </Field>
 
         <Field label="Model" hint="Hugging Face repo (e.g. Qwen/Qwen2.5-7B-Instruct)" required>
           <Input
@@ -377,7 +465,10 @@ export function InferenceForm() {
         <Button variant="ghost" onClick={() => router.push("/serverless")} disabled={pending}>
           Cancel
         </Button>
-        <Button onClick={submit} disabled={pending || idleInvalid || advancedInvalid}>
+        <Button
+          onClick={submit}
+          disabled={pending || idleInvalid || advancedInvalid || explicitlyUnavailable}
+        >
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
           Create endpoint
         </Button>
@@ -391,18 +482,23 @@ function Field({
   hint,
   required,
   children,
+  extra,
 }: {
   label: string;
   hint?: string;
   required?: boolean;
   children: React.ReactNode;
+  extra?: React.ReactNode;
 }) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-xs uppercase tracking-wide text-muted-foreground">
-        {label}
-        {required && <span className="ml-1 text-destructive">*</span>}
-      </Label>
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+          {label}
+          {required && <span className="ml-1 text-destructive">*</span>}
+        </Label>
+        {extra}
+      </div>
       {children}
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>

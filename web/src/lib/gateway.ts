@@ -6,6 +6,17 @@
 
 import type { AppRecord, CreateAppRequest, CreateAppResponse } from "./types";
 
+export type GpuAvailability = {
+  gpu: string;
+  count: number;
+  available: boolean | null;
+  cheapest_price_hr: number | null;
+  regions: string[];
+  reason: string | null;
+  checked_at: number;
+  provider: string;
+};
+
 export type GatewayRequestRecord = {
   request_id: string;
   app_id: string;
@@ -73,5 +84,9 @@ export const gateway = {
   listAppRequests: (id: string, limit = 100) =>
     request<GatewayRequestRecord[]>(
       `/apps/${encodeURIComponent(id)}/requests?limit=${limit}`,
+    ),
+  checkAvailability: (gpu: string, count = 1) =>
+    request<GpuAvailability>(
+      `/v1/availability?gpu=${encodeURIComponent(gpu)}&count=${count}`,
     ),
 };
