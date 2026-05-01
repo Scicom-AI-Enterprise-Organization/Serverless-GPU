@@ -41,7 +41,14 @@ class Provider(ABC):
     name: str = "abstract"
 
     @abstractmethod
-    async def provision(self, app_id: str, model: str, gpu: str, env: dict[str, str]) -> str:
+    async def provision(
+        self,
+        app_id: str,
+        model: str,
+        gpu: str,
+        env: dict[str, str],
+        gpu_count: int = 1,
+    ) -> str:
         """Spawn a worker for `app_id`. Returns a machine_id.
 
         The worker registers itself back to the gateway asynchronously — this
@@ -93,14 +100,21 @@ class FakeProvider(Provider):
             "GATEWAY_URL_FOR_PROVIDER", "http://127.0.0.1:8080"
         )
 
-    async def provision(self, app_id: str, model: str, gpu: str, env: dict[str, str]) -> str:
+    async def provision(
+        self,
+        app_id: str,
+        model: str,
+        gpu: str,
+        env: dict[str, str],
+        gpu_count: int = 1,
+    ) -> str:
         machine_id = f"m-fake-{uuid.uuid4().hex[:8]}"
         task = asyncio.create_task(
             self._spawn(machine_id, app_id, model, env),
             name=f"fake-worker-{machine_id}",
         )
         self._tasks[machine_id] = task
-        logger.info("fake-provision: app=%s gpu=%s → %s", app_id, gpu, machine_id)
+        logger.info("fake-provision: app=%s gpu=%sx%d → %s", app_id, gpu, gpu_count, machine_id)
         return machine_id
 
     async def _spawn(self, machine_id: str, app_id: str, model: str, env: dict[str, str]) -> None:

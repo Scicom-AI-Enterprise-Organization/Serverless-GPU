@@ -105,6 +105,7 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
                     model=app.model,
                     gpu=app.gpu,
                     env=env,
+                    gpu_count=int(getattr(app, "gpu_count", 1) or 1),
                 )
                 _metrics.PROVISION_TOTAL.labels(provider=provider.name, ok="true").inc()
             except Exception:

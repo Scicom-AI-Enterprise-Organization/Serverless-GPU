@@ -46,12 +46,14 @@ class UpdateAutoscalerRequest(BaseModel):
     tasks_per_container: Optional[int] = None
     idle_timeout_s: Optional[int] = None
     vllm_args: Optional[str] = None
+    gpu_count: Optional[int] = None
 
 
 class CreateAppRequest(BaseModel):
     name: str
     model: str
     gpu: str
+    gpu_count: int = 1
     autoscaler: AutoscalerSpec = Field(default_factory=AutoscalerSpec)
     cpu: int = 2
     memory: str = "16Gi"
@@ -69,6 +71,7 @@ class AppRecord(BaseModel):
     name: str
     model: str
     gpu: str
+    gpu_count: int = 1
     autoscaler: AutoscalerSpec
     cpu: int = 2
     memory: str = "16Gi"
@@ -157,6 +160,7 @@ def _to_app_record(app: App) -> AppRecord:
         name=app.name,
         model=app.model,
         gpu=app.gpu,
+        gpu_count=getattr(app, "gpu_count", 1) or 1,
         autoscaler=AutoscalerSpec(**app.autoscaler),
         cpu=app.cpu,
         memory=app.memory,
@@ -481,12 +485,15 @@ async def create_app(
     user: User = Depends(require_developer),
     session: AsyncSession = Depends(get_session),
 ):
+    if req.gpu_count < 1 or req.gpu_count > 8:
+        raise HTTPException(status_code=400, detail="gpu_count must be 1..8")
     record = App(
         app_id=req.name,
         owner_id=user.id,
         name=req.name,
         model=req.model,
         gpu=req.gpu,
+        gpu_count=req.gpu_count,
         autoscaler=req.autoscaler.model_dump(),
         cpu=req.cpu,
         memory=req.memory,
@@ -569,6 +576,11 @@ async def update_app_autoscaler(
         if len(new_args) > 2048:
             raise HTTPException(status_code=400, detail="vllm_args too long (max 2048 chars)")
         target.vllm_args = new_args
+    if "gpu_count" in updates:
+        new_count = int(updates["gpu_count"])
+        if new_count < 1 or new_count > 8:
+            raise HTTPException(status_code=400, detail="gpu_count must be 1..8")
+        target.gpu_count = new_count
     await session.commit()
     await session.refresh(target)
     # Reset the idle clock when idle_timeout_s changes — otherwise switching

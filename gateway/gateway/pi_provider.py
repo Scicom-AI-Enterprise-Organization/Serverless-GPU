@@ -129,7 +129,14 @@ class PrimeIntellectProvider(Provider):
         self._avail_cache: dict[tuple[str, int], tuple[GpuAvailability, float]] = {}
         self._avail_locks: dict[tuple[str, int], asyncio.Lock] = {}
 
-    async def provision(self, app_id: str, model: str, gpu: str, env: dict[str, str]) -> str:
+    async def provision(
+        self,
+        app_id: str,
+        model: str,
+        gpu: str,
+        env: dict[str, str],
+        gpu_count: int = 1,
+    ) -> str:
         import uuid as _uuid
 
         machine_id = f"m-pi-{_uuid.uuid4().hex[:8]}"
@@ -154,7 +161,7 @@ class PrimeIntellectProvider(Provider):
                 "cloudId": self.cloud_id,
                 "gpuType": _map_gpu(gpu),
                 "socket": self.gpu_socket,
-                "gpuCount": 1,
+                "gpuCount": max(1, int(gpu_count)),
                 "customTemplateId": self.custom_template_id,
                 "envVars": env_vars,
                 "autoRestart": False,

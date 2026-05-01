@@ -36,28 +36,53 @@ logger = logging.getLogger("gateway.runpod_provider")
 _AVAILABILITY_TTL_S = 30.0
 
 
-# Map app-spec GPU strings to RunPod gpuTypeIds. Strings come from the
-# /v1/gputypes endpoint and are case-sensitive.
+# Map app-spec GPU strings to RunPod gpuTypeIds. The right-hand strings come
+# from RunPod's GraphQL `gpuTypes.id` field and are case-sensitive.
 _GPU_NAME_MAP = {
+    # Datacenter — current gen
+    "H200": "NVIDIA H200",
     "H100": "NVIDIA H100 80GB HBM3",
+    "H100-SXM": "NVIDIA H100 80GB HBM3",
     "H100-80GB": "NVIDIA H100 80GB HBM3",
+    "H100-PCIe": "NVIDIA H100 PCIe",
+    "H100-NVL": "NVIDIA H100 NVL",
+    "B200": "NVIDIA B200",
+    "MI300X": "AMD Instinct MI300X OAM",
+    # Datacenter — Ampere
     "A100": "NVIDIA A100 80GB PCIe",
     "A100-80GB": "NVIDIA A100 80GB PCIe",
+    "A100-SXM": "NVIDIA A100-SXM4-80GB",
     "A100-40G": "NVIDIA A100-PCIE-40GB",
-    "A10G": "NVIDIA A10",
+    "A100-40GB": "NVIDIA A100-PCIE-40GB",
+    "A40": "NVIDIA A40",
     "A10": "NVIDIA A10",
+    "A10G": "NVIDIA A10",
     "A10-24GB": "NVIDIA A10",
+    # Datacenter — Ada
     "L40S": "NVIDIA L40S",
     "L40S-48GB": "NVIDIA L40S",
     "L40": "NVIDIA L40",
     "L4": "NVIDIA L4",
-    "RTX4090": "NVIDIA GeForce RTX 4090",
-    "RTX3090": "NVIDIA GeForce RTX 3090",
-    "rtx3090": "NVIDIA GeForce RTX 3090",
-    "rtx4090": "NVIDIA GeForce RTX 4090",
-    "rtx3090ti": "NVIDIA GeForce RTX 3090 Ti",
+    # Workstation
+    "RTX6000-Ada": "NVIDIA RTX 6000 Ada Generation",
     "RTX-A6000": "NVIDIA RTX A6000",
     "A6000": "NVIDIA RTX A6000",
+    "RTX-A5000": "NVIDIA RTX A5000",
+    "A5000": "NVIDIA RTX A5000",
+    "RTX-A4000": "NVIDIA RTX A4000",
+    "A4000": "NVIDIA RTX A4000",
+    # Consumer
+    "RTX4090": "NVIDIA GeForce RTX 4090",
+    "rtx4090": "NVIDIA GeForce RTX 4090",
+    "RTX3090": "NVIDIA GeForce RTX 3090",
+    "rtx3090": "NVIDIA GeForce RTX 3090",
+    "RTX3090Ti": "NVIDIA GeForce RTX 3090 Ti",
+    "rtx3090ti": "NVIDIA GeForce RTX 3090 Ti",
+    "RTX5090": "NVIDIA GeForce RTX 5090",
+    # Older
+    "V100": "Tesla V100-SXM2-32GB",
+    "V100-32GB": "Tesla V100-SXM2-32GB",
+    "T4": "Tesla T4",
 }
 
 
@@ -150,7 +175,14 @@ class RunPodProvider(Provider):
         self._avail_cache: dict[tuple[str, int], tuple[GpuAvailability, float]] = {}
         self._avail_locks: dict[tuple[str, int], asyncio.Lock] = {}
 
-    async def provision(self, app_id: str, model: str, gpu: str, env: dict[str, str]) -> str:
+    async def provision(
+        self,
+        app_id: str,
+        model: str,
+        gpu: str,
+        env: dict[str, str],
+        gpu_count: int = 1,
+    ) -> str:
         machine_id = f"m-rp-{uuid.uuid4().hex[:8]}"
         pod_name = f"{self.name_prefix}-{app_id}-{machine_id}"
 
@@ -174,7 +206,7 @@ class RunPodProvider(Provider):
             "templateId": self.template_id,
             "gpuTypeIds": [_map_gpu(gpu)],
             "cloudType": self.cloud_type,
-            "gpuCount": 1,
+            "gpuCount": max(1, int(gpu_count)),
             "containerDiskInGb": self.container_disk_in_gb,
             "volumeInGb": self.volume_in_gb,
             "env": env_vars,
