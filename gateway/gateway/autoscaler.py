@@ -35,6 +35,37 @@ REGISTRATION_TOKEN_TTL_S = 1800  # 30 min — covers slow ECR pulls + vLLM model
 PROVISION_COOLDOWN_S = 60  # back off this long after a provider provision failure
 PROVISION_ERROR_TTL_S = 600  # how long the UI keeps showing the last error
 
+# Worker events ring: per-worker timeline of lifecycle events the UI shows
+# under "gateway events" — provisioned, registered, scaled, terminated, etc.
+WORKER_EVENTS_CAP = 200
+WORKER_EVENTS_TTL_S = 3600
+
+
+async def emit_worker_event(
+    rdb: "redis_async.Redis",
+    machine_id: str,
+    app_id: str,
+    level: str,
+    msg: str,
+) -> None:
+    """Append a lifecycle event to the worker's capped Redis ring.
+
+    Also stamps `worker_app:{mid}` so the read endpoint can authorize a
+    request even after the worker pod has been torn down (worker:{mid}
+    expires when the worker stops heartbeating)."""
+    if not machine_id:
+        return
+    try:
+        entry = json.dumps({"ts": time.time(), "level": level, "msg": msg})
+        key = f"worker_events:{machine_id}"
+        await rdb.lpush(key, entry)
+        await rdb.ltrim(key, 0, WORKER_EVENTS_CAP - 1)
+        await rdb.expire(key, WORKER_EVENTS_TTL_S)
+        if app_id:
+            await rdb.set(f"worker_app:{machine_id}", app_id, ex=WORKER_EVENTS_TTL_S)
+    except Exception:
+        logger.exception("emit_worker_event failed for %s", machine_id)
+
 
 async def autoscaler_loop(
     rdb: "redis_async.Redis",
@@ -126,6 +157,10 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
                     gpu_count=int(getattr(app, "gpu_count", 1) or 1),
                 )
                 _metrics.PROVISION_TOTAL.labels(provider=provider.name, ok="true").inc()
+                await emit_worker_event(
+                    rdb, machine_id, app_id, "info",
+                    f"provisioned on {provider.name} (gpu={app.gpu}x{int(getattr(app, 'gpu_count', 1) or 1)})",
+                )
                 # Clear any stale error/cooldown after a successful provision.
                 await rdb.delete(
                     f"app:{app_id}:last_provision_error",
@@ -174,6 +209,10 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
                 }),
                 ex=REGISTRATION_TOKEN_TTL_S,
             )
+            await emit_worker_event(
+                rdb, machine_id, app_id, "info",
+                f"scaled up: +1 worker → {current + 1}/{max_containers}",
+            )
             logger.info("scaled up %s: +1 worker (%s) → %d/%d", app_id, machine_id, current + 1, max_containers)
             current += 1
     elif idle_timeout_s > 0 and desired < current and queue_len == 0 and idle_for >= idle_timeout_s:
@@ -183,8 +222,13 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
             try:
                 await provider.terminate(victim)
                 _metrics.TERMINATE_TOTAL.labels(provider=provider.name, ok="true").inc()
+                await emit_worker_event(
+                    rdb, victim, app_id, "info",
+                    f"terminated (idle for {int(idle_for)}s)",
+                )
             except Exception:
                 _metrics.TERMINATE_TOTAL.labels(provider=provider.name, ok="false").inc()
+                await emit_worker_event(rdb, victim, app_id, "error", "terminate failed (provider error)")
                 raise
             await rdb.delete(f"worker:{victim}")
             await rdb.srem(f"worker_index:{app_id}", victim)

@@ -247,9 +247,12 @@ function WorkerRow({ w }: { w: WorkerRow }) {
 
 type LogSource = "gateway" | "container";
 
+type GatewayEvent = { ts: number; level: "info" | "warning" | "error" | string; msg: string };
+
 function WorkerLogs({ machineId }: { machineId: string }) {
   const [source, setSource] = useState<LogSource>("gateway");
   const [lines, setLines] = useState<string[]>([]);
+  const [events, setEvents] = useState<GatewayEvent[]>([]);
   const [err, setErr] = useState<{ msg: string; hint?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [autoTail, setAutoTail] = useState(true);
@@ -258,7 +261,7 @@ function WorkerLogs({ machineId }: { machineId: string }) {
     try {
       const url =
         source === "gateway"
-          ? `/api/cluster/worker-logs?machine_id=${encodeURIComponent(machineId)}&tail=300`
+          ? `/api/proxy/workers/${encodeURIComponent(machineId)}/events?tail=200`
           : `/api/proxy/workers/${encodeURIComponent(machineId)}/logs?tail=300`;
       const r = await fetch(url, { cache: "no-store" });
       const text = await r.text();
@@ -275,9 +278,14 @@ function WorkerLogs({ machineId }: { machineId: string }) {
         setErr({ msg, hint });
         return;
       }
-      const body = JSON.parse(text) as { lines?: string[] };
       setErr(null);
-      setLines(body.lines ?? []);
+      if (source === "gateway") {
+        const body = JSON.parse(text) as { events?: GatewayEvent[] };
+        setEvents(body.events ?? []);
+      } else {
+        const body = JSON.parse(text) as { lines?: string[] };
+        setLines(body.lines ?? []);
+      }
     } catch (e) {
       setErr({ msg: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -288,6 +296,7 @@ function WorkerLogs({ machineId }: { machineId: string }) {
   useEffect(() => {
     setLoading(true);
     setLines([]);
+    setEvents([]);
     setErr(null);
   }, [source]);
 
@@ -297,6 +306,8 @@ function WorkerLogs({ machineId }: { machineId: string }) {
     const id = window.setInterval(fetchLogs, 2500);
     return () => window.clearInterval(id);
   }, [fetchLogs, autoTail]);
+
+  const empty = source === "gateway" ? events.length === 0 : lines.length === 0;
 
   return (
     <div className="space-y-2">
@@ -348,13 +359,19 @@ function WorkerLogs({ machineId }: { machineId: string }) {
           <div className="font-medium">{err.msg}</div>
           {err.hint && <div className="mt-1 opacity-80">{err.hint}</div>}
         </div>
-      ) : lines.length === 0 ? (
+      ) : empty ? (
         <div className="rounded-md border border-dashed border-border bg-background/40 px-3 py-4 text-center text-xs text-muted-foreground">
           {loading
             ? "loading…"
             : source === "gateway"
               ? "no gateway events for this worker yet"
               : "no container logs yet — vLLM may still be booting, or this worker pre-dates the log shipper"}
+        </div>
+      ) : source === "gateway" ? (
+        <div className="max-h-72 overflow-auto rounded-md border border-border bg-background/60 p-2 text-xs scrollbar-thin">
+          {events.map((e, i) => (
+            <EventRow key={i} event={e} />
+          ))}
         </div>
       ) : (
         <pre className="max-h-72 overflow-auto rounded-md border border-border bg-background/60 p-3 font-mono text-[11px] leading-relaxed scrollbar-thin">
@@ -367,9 +384,9 @@ function WorkerLogs({ machineId }: { machineId: string }) {
       <p className="text-[10px] leading-relaxed text-muted-foreground">
         {source === "gateway" ? (
           <>
-            Source: <code className="font-mono">kubectl logs deploy/serverlessgpu-gateway | grep {machineId}</code>.
-            These are <strong>gateway-side</strong> events (provision, register, scale,
-            terminate).
+            Source: per-worker timeline pushed by the gateway as it provisions,
+            registers, drains and terminates. Capped at 200 events, kept for 1h
+            after the worker is gone.
           </>
         ) : (
           <>
@@ -379,6 +396,39 @@ function WorkerLogs({ machineId }: { machineId: string }) {
           </>
         )}
       </p>
+    </div>
+  );
+}
+
+const LEVEL_STYLES: Record<string, string> = {
+  info:    "text-muted-foreground",
+  warning: "text-amber-600 dark:text-amber-400",
+  error:   "text-red-600 dark:text-red-400",
+};
+const LEVEL_BADGES: Record<string, string> = {
+  info:    "bg-muted text-muted-foreground",
+  warning: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+  error:   "bg-red-500/15 text-red-600 dark:text-red-400",
+};
+
+function EventRow({ event }: { event: GatewayEvent }) {
+  const date = new Date(event.ts * 1000);
+  const time = date.toLocaleTimeString(undefined, { hour12: false });
+  const level = (event.level ?? "info").toLowerCase();
+  const badgeCls = LEVEL_BADGES[level] ?? LEVEL_BADGES.info;
+  const textCls = LEVEL_STYLES[level] ?? LEVEL_STYLES.info;
+  return (
+    <div className="flex items-start gap-3 border-b border-border/30 px-1.5 py-1.5 last:border-b-0">
+      <span className="font-mono text-[10px] text-muted-foreground tabular-nums">{time}</span>
+      <span
+        className={cn(
+          "rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide shrink-0",
+          badgeCls,
+        )}
+      >
+        {level}
+      </span>
+      <span className={cn("flex-1 break-words", textCls)}>{event.msg}</span>
     </div>
   );
 }

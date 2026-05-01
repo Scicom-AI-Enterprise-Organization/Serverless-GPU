@@ -541,7 +541,7 @@ async def create_app(
         if extra:
             env["VLLM_EXTRA_ARGS"] = extra
         try:
-            from .autoscaler import REGISTRATION_TOKEN_TTL_S
+            from .autoscaler import REGISTRATION_TOKEN_TTL_S, emit_worker_event
             machine_id = await provider.provision(
                 app_id=req.name,
                 model=req.model,
@@ -585,6 +585,10 @@ async def create_app(
                 "last_seen": time.time(),
             }),
             ex=REGISTRATION_TOKEN_TTL_S,
+        )
+        await emit_worker_event(
+            rdb, machine_id, req.name, "info",
+            f"provisioned on {provider.name} (gpu={req.gpu}x{req.gpu_count}, pre-flight at create)",
         )
         await rdb.delete(f"app:{req.name}:provision_cooldown_until")
         logger.info("create_app pre-flight provisioned %s for %s", machine_id, req.name)
@@ -736,10 +740,12 @@ async def restart_app_workers(
     orphan pods (in the provider but not in worker_index) too."""
     rdb = request.app.state.redis
     await _load_owned_app(session, app_id, user)
+    from .autoscaler import emit_worker_event
 
     tracked = set(await rdb.smembers(f"worker_index:{app_id}"))
     for mid in tracked:
         await rdb.set(f"worker:{mid}:drain", "1", ex=600)
+        await emit_worker_event(rdb, mid, app_id, "warning", "drain signal sent (restart)")
 
     provider = getattr(request.app.state, "provider", None)
     all_machines = set(tracked)
@@ -754,8 +760,10 @@ async def restart_app_workers(
         for mid in all_machines:
             try:
                 await provider.terminate(mid)
+                await emit_worker_event(rdb, mid, app_id, "info", "terminated (restart)")
             except Exception:
                 logger.exception("restart app %s: provider.terminate(%s) failed", app_id, mid)
+                await emit_worker_event(rdb, mid, app_id, "error", "terminate failed (restart)")
 
     for mid in all_machines:
         await rdb.delete(f"worker:{mid}", f"register_token:{mid}")
@@ -777,10 +785,12 @@ async def delete_app(
 ):
     rdb = request.app.state.redis
     app = await _load_owned_app(session, app_id, user)
+    from .autoscaler import emit_worker_event
 
     tracked = set(await rdb.smembers(f"worker_index:{app_id}"))
     for mid in tracked:
         await rdb.set(f"worker:{mid}:drain", "1", ex=600)
+        await emit_worker_event(rdb, mid, app_id, "warning", "drain signal sent (app deleted)")
     logger.info("delete app %s: marked %d tracked workers for drain", app_id, len(tracked))
 
     provider = getattr(request.app.state, "provider", None)
@@ -796,8 +806,10 @@ async def delete_app(
         for mid in all_machines:
             try:
                 await provider.terminate(mid)
+                await emit_worker_event(rdb, mid, app_id, "info", "terminated (app deleted)")
             except Exception:
                 logger.exception("delete app %s: provider.terminate(%s) failed", app_id, mid)
+                await emit_worker_event(rdb, mid, app_id, "error", "terminate failed (app delete)")
 
     for mid in all_machines:
         await rdb.delete(f"worker:{mid}", f"register_token:{mid}")
@@ -1218,6 +1230,8 @@ async def register_worker(req: WorkerRegisterRequest, request: Request):
     }
     await rdb.set(f"worker:{req.machine_id}", json.dumps(state), ex=WORKER_TTL_S)
     await rdb.sadd(f"worker_index:{req.app_id}", req.machine_id)
+    from .autoscaler import emit_worker_event
+    await emit_worker_event(rdb, req.machine_id, req.app_id, "info", "registered with gateway")
     logger.info("worker registered: machine=%s app=%s", req.machine_id, req.app_id)
     redis_url = os.environ.get(
         "WORKER_REDIS_URL",
@@ -1262,6 +1276,53 @@ async def ingest_worker_logs(req: WorkerLogsRequest, request: Request):
     return {"ok": True, "stored": len(truncated)}
 
 
+async def _resolve_worker_app_id(rdb: Any, machine_id: str) -> Optional[str]:
+    """Find which app a worker belongs to. Prefers worker:{mid} (live state)
+    but falls back to worker_app:{mid} sidecar so /events still works after
+    the worker has been terminated and worker:{mid} expired."""
+    state_blob = await rdb.get(f"worker:{machine_id}")
+    if state_blob:
+        try:
+            return json.loads(state_blob).get("app_id")
+        except json.JSONDecodeError:
+            pass
+    return await rdb.get(f"worker_app:{machine_id}")
+
+
+@app.get("/workers/{machine_id}/events")
+async def get_worker_events(
+    machine_id: str,
+    request: Request,
+    tail: int = 100,
+    user: User = Depends(require_developer),
+    session: AsyncSession = Depends(get_session),
+):
+    """Return the worker's lifecycle event timeline (provisioned, registered,
+    scaled, drained, terminated, etc.). Auth: the requesting user must own
+    the app this worker belongs to."""
+    if tail < 1 or tail > 200:
+        raise HTTPException(status_code=400, detail="tail must be 1..200")
+    rdb = request.app.state.redis
+    app_id = await _resolve_worker_app_id(rdb, machine_id)
+    if not app_id:
+        raise HTTPException(status_code=404, detail="worker not found or expired")
+    target_app = await _load_owned_app(session, app_id, user)
+    raw = await rdb.lrange(f"worker_events:{machine_id}", 0, tail - 1)
+    events: list[dict[str, Any]] = []
+    # Stored newest-first; flip to chronological for the UI.
+    for entry in reversed(raw):
+        try:
+            events.append(json.loads(entry))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return {
+        "machine_id": machine_id,
+        "app_id": target_app.app_id,
+        "events": events,
+        "count": len(events),
+    }
+
+
 @app.get("/workers/{machine_id}/logs")
 async def get_worker_logs(
     machine_id: str,
@@ -1275,17 +1336,9 @@ async def get_worker_logs(
     if tail < 1 or tail > WORKER_LOGS_CAP:
         raise HTTPException(status_code=400, detail=f"tail must be 1..{WORKER_LOGS_CAP}")
     rdb = request.app.state.redis
-    state_blob = await rdb.get(f"worker:{machine_id}")
-    if not state_blob:
-        raise HTTPException(status_code=404, detail="worker not found or expired")
-    try:
-        state = json.loads(state_blob)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="worker state corrupt")
-    app_id = state.get("app_id")
+    app_id = await _resolve_worker_app_id(rdb, machine_id)
     if not app_id:
-        raise HTTPException(status_code=500, detail="worker missing app_id")
-    # Ownership check — same pattern as _load_owned_app.
+        raise HTTPException(status_code=404, detail="worker not found or expired")
     target_app = await _load_owned_app(session, app_id, user)
     raw = await rdb.lrange(f"worker_logs:{machine_id}", 0, tail - 1)
     # Stored newest-first; flip to chronological for the UI.
