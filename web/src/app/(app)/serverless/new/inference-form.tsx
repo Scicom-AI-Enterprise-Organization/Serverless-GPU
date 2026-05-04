@@ -137,6 +137,7 @@ export function InferenceForm() {
   const [idleInput, setIdleInput] = useState("");
   const [alwaysOn, setAlwaysOn] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [enableMetrics, setEnableMetrics] = useState(true);
   const [vllm, setVllm] = useState({ ...DEFAULT_VLLM_ARGS });
   const [unavailableModal, setUnavailableModal] = useState<
     | { gpu: string; gpu_count: number; reason: string }
@@ -201,6 +202,7 @@ export function InferenceForm() {
           idle_timeout_s: alwaysOn ? 0 : parsedIdle,
         },
         vllm_args: vllmArgs,
+        enable_metrics: enableMetrics,
       });
       if (!res.ok) {
         if (res.unavailable) {
@@ -474,6 +476,28 @@ export function InferenceForm() {
               )}
             </div>
           )}
+        </div>
+
+        <div className="border-t border-border pt-4">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <Checkbox
+              checked={enableMetrics}
+              onCheckedChange={(v) => setEnableMetrics(v === true)}
+              className="mt-0.5"
+            />
+            <div className="flex-1">
+              <div className="text-sm font-medium">Enable metrics</div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Each worker self-installs Alloy + DCGM, node, and vLLM exporters
+                on boot via ansible-pull. Metrics push to VictoriaMetrics with
+                an{" "}
+                <code className="font-mono text-[11px]">endpoint=&lt;name&gt;</code>{" "}
+                label so you can filter the Grafana dashboard per endpoint.
+                Adds ~20 s to cold-start; runs in the background after vLLM is
+                ready so requests aren't delayed.
+              </p>
+            </div>
+          </label>
         </div>
       </div>
 

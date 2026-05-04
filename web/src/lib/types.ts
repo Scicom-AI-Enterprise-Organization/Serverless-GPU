@@ -17,6 +17,7 @@ export type AppRecord = {
   memory: string;
   request_timeout_s: number;
   vllm_args: string;
+  enable_metrics: boolean;
   created_at: string;
   owner: string;
 };
@@ -31,6 +32,7 @@ export type CreateAppRequest = {
   memory?: string;
   request_timeout_s?: number;
   vllm_args?: string;
+  enable_metrics?: boolean;
 };
 
 export type CreateAppResponse = {
