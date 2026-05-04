@@ -60,6 +60,7 @@ class CreateAppRequest(BaseModel):
     memory: str = "16Gi"
     request_timeout_s: int = 600
     vllm_args: str = ""
+    enable_metrics: bool = True
 
 
 class CreateAppResponse(BaseModel):
@@ -78,6 +79,7 @@ class AppRecord(BaseModel):
     memory: str = "16Gi"
     request_timeout_s: int = 600
     vllm_args: str = ""
+    enable_metrics: bool = True
     created_at: str
     owner: str
 
@@ -178,6 +180,7 @@ def _to_app_record(app: App) -> AppRecord:
         memory=app.memory,
         request_timeout_s=app.request_timeout_s,
         vllm_args=app.vllm_args or "",
+        enable_metrics=bool(getattr(app, "enable_metrics", True)),
         created_at=app.created_at.isoformat() if app.created_at else "",
         owner=app.owner.username if app.owner else "",
     )
@@ -506,6 +509,7 @@ async def create_app(
         model=req.model,
         gpu=req.gpu,
         gpu_count=req.gpu_count,
+        enable_metrics=req.enable_metrics,
         autoscaler=req.autoscaler.model_dump(),
         cpu=req.cpu,
         memory=req.memory,
@@ -540,8 +544,10 @@ async def create_app(
         extra = (req.vllm_args or "").strip()
         if extra:
             env["VLLM_EXTRA_ARGS"] = extra
+        from .autoscaler import REGISTRATION_TOKEN_TTL_S, emit_worker_event, build_metrics_env
+        if req.enable_metrics:
+            env.update(build_metrics_env(req.name, provider.name))
         try:
-            from .autoscaler import REGISTRATION_TOKEN_TTL_S, emit_worker_event
             machine_id = await provider.provision(
                 app_id=req.name,
                 model=req.model,

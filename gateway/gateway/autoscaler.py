@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import secrets
 import time
 from typing import TYPE_CHECKING
@@ -39,6 +40,34 @@ PROVISION_ERROR_TTL_S = 600  # how long the UI keeps showing the last error
 # under "gateway events" — provisioned, registered, scaled, terminated, etc.
 WORKER_EVENTS_CAP = 200
 WORKER_EVENTS_TTL_S = 3600
+
+
+def build_metrics_env(app_id: str, provider_name: str) -> dict[str, str]:
+    """Per-worker observability env: tells the worker entrypoint to run
+    ansible-pull on the gpu-metrics-exporter playbook so it self-installs the
+    DCGM/node/vLLM exporter stack and ships metrics to VictoriaMetrics under
+    an `endpoint=<app_id>` label.
+
+    Returns an empty dict (= disabled) when the gateway pod is missing the
+    METRICS_REMOTE_WRITE_URL/USERNAME/PASSWORD secret triple — keeps local
+    dev installs working without forcing the secret to exist."""
+    url = (os.environ.get("METRICS_REMOTE_WRITE_URL") or "").strip()
+    user = (os.environ.get("METRICS_USERNAME") or "").strip()
+    pw = (os.environ.get("METRICS_PASSWORD") or "").strip()
+    if not (url and user and pw):
+        return {}
+    repo = (os.environ.get("METRICS_REPO_URL") or "https://github.com/AIES-Infra/gpu-metrics-exporter.git").strip()
+    branch = (os.environ.get("METRICS_REPO_BRANCH") or "main").strip()
+    return {
+        "ENABLE_METRICS": "true",
+        "METRICS_REPO_URL": repo,
+        "METRICS_REPO_BRANCH": branch,
+        "METRICS_REMOTE_WRITE_URL": url,
+        "METRICS_USERNAME": user,
+        "METRICS_PASSWORD": pw,
+        "METRICS_DATACENTER": provider_name,
+        "METRICS_ENDPOINT": app_id,
+    }
 
 
 async def emit_worker_event(
@@ -148,6 +177,8 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
             extra = (getattr(app, "vllm_args", "") or "").strip()
             if extra:
                 env["VLLM_EXTRA_ARGS"] = extra
+            if bool(getattr(app, "enable_metrics", True)):
+                env.update(build_metrics_env(app_id, provider.name))
             try:
                 machine_id = await provider.provision(
                     app_id=app_id,

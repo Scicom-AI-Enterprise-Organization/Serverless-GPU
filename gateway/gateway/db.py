@@ -46,6 +46,7 @@ class App(Base):
     model: Mapped[str] = mapped_column(String(255))
     gpu: Mapped[str] = mapped_column(String(64))
     gpu_count: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    enable_metrics: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     autoscaler: Mapped[dict] = mapped_column(JSON)
     cpu: Mapped[int] = mapped_column(Integer, default=2)
     memory: Mapped[str] = mapped_column(String(32), default="16Gi")
@@ -103,6 +104,9 @@ async def init_db() -> None:
         ))
         await conn.execute(text(
             "ALTER TABLE apps ADD COLUMN IF NOT EXISTS gpu_count INTEGER NOT NULL DEFAULT 1"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE apps ADD COLUMN IF NOT EXISTS enable_metrics BOOLEAN NOT NULL DEFAULT TRUE"
         ))
         await conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users(email) WHERE email IS NOT NULL"

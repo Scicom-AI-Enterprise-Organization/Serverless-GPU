@@ -75,5 +75,30 @@ done
 # Worker-agent runs in foreground; if it exits, kill vllm + tail too.
 trap 'kill -TERM "$VLLM_PID" "$TAIL_PID" 2>/dev/null || true' EXIT
 
+# Per-worker observability — fire-and-forget ansible-pull AFTER vllm is ready
+# so it never delays the first request. Failures are non-fatal.
+if [ "${ENABLE_METRICS:-false}" = "true" ]; then
+  (
+    echo "[metrics] running ansible-pull (endpoint=$APP_ID)"
+    ansible-pull \
+      -U "${METRICS_REPO_URL:-https://github.com/AIES-Infra/gpu-metrics-exporter.git}" \
+      -C "${METRICS_REPO_BRANCH:-main}" \
+      -i localhost, \
+      playbooks/serverless_metrics_local.yml \
+      -e "endpoint=$APP_ID" \
+      -e "datacenter=${METRICS_DATACENTER:-runpod}" \
+      -e "vllm_port=$VLLM_PORT" \
+      -e "alloy_remote_write_url=$METRICS_REMOTE_WRITE_URL" \
+      -e "alloy_vllm_remote_write_url=$METRICS_REMOTE_WRITE_URL" \
+      -e "alloy_username=$METRICS_USERNAME" \
+      -e "alloy_vllm_username=$METRICS_USERNAME" \
+      -e "alloy_password=$METRICS_PASSWORD" \
+      -e "alloy_vllm_password=$METRICS_PASSWORD" \
+      > /var/log/ansible-pull.log 2>&1 \
+      && echo "[metrics] install ok" \
+      || echo "[metrics] ansible-pull failed (non-fatal); see /var/log/ansible-pull.log"
+  ) &
+fi
+
 echo "[entrypoint] starting worker-agent: app=$APP_ID machine=$MACHINE_ID"
 exec python3 -m worker_agent.main
