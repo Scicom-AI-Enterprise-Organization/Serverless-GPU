@@ -109,3 +109,50 @@ async def require_admin(user: User = Depends(current_user)) -> User:
     if not _has_role(user, "admin"):
         raise HTTPException(status_code=403, detail={"error": "admin only"})
     return user
+
+
+# Section-level access. Layered on top of role: only `developer` (and `admin`,
+# who bypasses) can ever access platform sections, then per-user
+# section_permissions narrows it further. Existing developers (pre-migration)
+# default to all-true via the migration backfill.
+SECTIONS = ("inference", "benchmark", "compute")
+
+
+async def has_section(user: User, section: str, session: AsyncSession) -> bool:
+    """Effective permission lookup. Admins bypass; developers resolve through
+    their attached policy role's `sections` map. Tier `user` always denied.
+    """
+    if _has_role(user, "admin"):
+        return True
+    if not _has_role(user, "developer"):
+        return False
+    if not user.policy_role_id:
+        return False
+    from .db import PolicyRole
+    role = await session.get(PolicyRole, user.policy_role_id)
+    if role is None:
+        return False
+    return bool((role.sections or {}).get(section, False))
+
+
+def require_section(section: str):
+    """Dependency factory: returns a FastAPI dep that gates on a section."""
+    async def _dep(
+        user: User = Depends(current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> User:
+        if not _has_role(user, "developer", "admin"):
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "no platform access — ask an admin to grant developer role"},
+            )
+        if not await has_section(user, section, session):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": f"no access to {section} — ask an admin to attach a role with {section} access",
+                    "section": section,
+                },
+            )
+        return user
+    return _dep

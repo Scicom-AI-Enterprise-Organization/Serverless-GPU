@@ -21,16 +21,21 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from . import metrics
 from .auth import (
+    SECTIONS,
     create_session,
     current_user,
+    has_section,
     hash_password,
     require_admin,
     require_developer,
+    require_section,
     revoke_session,
     verify_password,
 )
-from .db import App, Request as ReqRow, User, get_session, init_db, get_user_by_username, list_all_apps, seed_admin_user, session_factory, shutdown_db
+from .db import App, AuditLog, PolicyRole, Request as ReqRow, User, get_session, init_db, get_user_by_username, list_all_apps, seed_admin_user, session_factory, shutdown_db
+from . import audit as audit_module
 from . import bench as bench_module
+from . import compute as compute_module
 
 logger = logging.getLogger("gateway")
 
@@ -149,6 +154,10 @@ class WhoamiResponse(BaseModel):
     email: Optional[str] = None
     is_admin: bool = False
     role: str = "user"
+    policy_role_id: Optional[str] = None
+    # Effective per-section access — collapsed (admin → all true; developer
+    # → resolved through policy role; user → all false).
+    sections: dict[str, bool] = Field(default_factory=dict)
 
 
 class UserRecord(BaseModel):
@@ -157,11 +166,50 @@ class UserRecord(BaseModel):
     email: Optional[str] = None
     role: str
     is_admin: bool
+    policy_role_id: Optional[str] = None
+    policy_role_name: Optional[str] = None
+    section_permissions: dict[str, bool] = Field(default_factory=dict)
     created_at: str
 
 
 class SetRoleRequest(BaseModel):
     role: str  # validated against {"user","developer","admin"} in the handler
+
+
+class SetPolicyRoleRequest(BaseModel):
+    # null/missing = detach (no sections)
+    policy_role_id: Optional[str] = None
+
+
+class PolicyRoleRecord(BaseModel):
+    id: str
+    name: str
+    sections: dict[str, bool]
+    is_system: bool
+    created_at: str
+
+
+class CreatePolicyRoleRequest(BaseModel):
+    id: str = Field(min_length=2, max_length=64, pattern=r"^[a-z0-9-]+$")
+    name: str = Field(min_length=1, max_length=128)
+    sections: dict[str, bool] = Field(default_factory=dict)
+
+
+class UpdatePolicyRoleRequest(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=128)
+    sections: Optional[dict[str, bool]] = None
+
+
+class AuditLogRecord(BaseModel):
+    id: int
+    actor_id: Optional[int] = None
+    actor_username: str
+    action: str
+    resource_type: str
+    resource_id: Optional[str] = None
+    resource_name: Optional[str] = None
+    details: Optional[dict] = None
+    created_at: str
 
 
 class ChangePasswordRequest(BaseModel):
@@ -213,6 +261,17 @@ async def lifespan(app: FastAPI):
                 "Check RunPod for any pods left billing.", orphaned,
             )
         logger.info("bench enabled (bucket=%s)", os.environ.get("BENCHMARK_S3_BUCKET"))
+    if os.environ.get("RUNPOD_API_KEY", "").strip():
+        # Compute uses the same RunPod creds; cleanup any rows the previous
+        # gateway process was mid-creating. Running pods stay running on
+        # RunPod and the row keeps its `running` status.
+        orphaned = await compute_module.cleanup_orphaned_running()
+        if orphaned:
+            logger.warning(
+                "compute: marked %d previously-creating pod(s) as failed (gateway restart). "
+                "Check RunPod dashboard for any pod still billing.", orphaned,
+            )
+        logger.info("compute enabled")
     if os.environ.get("AUTOSCALER", "0") == "1":
         from .provider import build_provider
         from .autoscaler import autoscaler_loop
@@ -278,6 +337,7 @@ app = FastAPI(
     openapi_url=None,
 )
 app.include_router(bench_module.router)
+app.include_router(compute_module.router)
 
 
 @app.middleware("http")
@@ -380,18 +440,42 @@ async def logout(request: Request, user: User = Depends(current_user)):
     return {"ok": True}
 
 
+async def _user_to_record(u: User, session: AsyncSession) -> UserRecord:
+    role_obj = (
+        await session.get(PolicyRole, u.policy_role_id) if u.policy_role_id else None
+    )
+    sections = {s: await has_section(u, s, session) for s in SECTIONS}
+    return UserRecord(
+        id=u.id,
+        username=u.username,
+        email=u.email,
+        role=u.role,
+        is_admin=u.is_admin,
+        policy_role_id=u.policy_role_id,
+        policy_role_name=role_obj.name if role_obj else None,
+        section_permissions=sections,
+        created_at=u.created_at.isoformat() if u.created_at else "",
+    )
+
+
 @app.get("/auth/me", response_model=WhoamiResponse)
-async def whoami(user: User = Depends(current_user)):
+async def whoami(
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    sections = {s: await has_section(user, s, session) for s in SECTIONS}
     return WhoamiResponse(
         user_id=user.id,
         username=user.username,
         email=user.email,
         is_admin=user.is_admin,
         role=user.role,
+        policy_role_id=user.policy_role_id,
+        sections=sections,
     )
 
 
-# ----- admin: role management -----
+# ----- admin: tier role + policy role management -----
 
 @app.get("/admin/users", response_model=list[UserRecord])
 async def list_users(
@@ -400,18 +484,10 @@ async def list_users(
 ):
     from sqlalchemy import select
     result = await session.execute(select(User).order_by(User.id))
-    rows = result.scalars().all()
-    return [
-        UserRecord(
-            id=u.id,
-            username=u.username,
-            email=u.email,
-            role=u.role,
-            is_admin=u.is_admin,
-            created_at=u.created_at.isoformat() if u.created_at else "",
-        )
-        for u in rows
-    ]
+    out: list[UserRecord] = []
+    for u in result.scalars().all():
+        out.append(await _user_to_record(u, session))
+    return out
 
 
 @app.delete("/admin/users/{user_id}")
@@ -429,6 +505,7 @@ async def delete_user(
     await session.delete(target)
     await session.commit()
     logger.info("user deleted: actor=%s target=%s", actor.username, username)
+    await audit_module.record(actor, "user.delete", "user", str(user_id), username)
     return {"ok": True, "username": username}
 
 
@@ -439,6 +516,9 @@ async def set_user_role(
     actor: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
+    """Tier role: user / developer / admin. Promoting to developer for the
+    first time auto-attaches the `full-access` policy role so the user can
+    actually do anything. Admin overrides everything anyway."""
     if req.role not in ("user", "developer", "admin"):
         raise HTTPException(status_code=400, detail={"error": "role must be one of: user, developer, admin"})
     target = await session.get(User, user_id)
@@ -446,19 +526,194 @@ async def set_user_role(
         raise HTTPException(status_code=404, detail="user not found")
     if target.id == actor.id and req.role != "admin":
         raise HTTPException(status_code=400, detail={"error": "you cannot demote yourself"})
+    old_role = target.role
     target.role = req.role
     target.is_admin = req.role == "admin"
+    if req.role in ("developer", "admin") and target.policy_role_id is None:
+        target.policy_role_id = "full-access"
     await session.commit()
     await session.refresh(target)
-    logger.info("role change: actor=%s target=%s new_role=%s", actor.username, target.username, target.role)
-    return UserRecord(
-        id=target.id,
-        username=target.username,
-        email=target.email,
-        role=target.role,
-        is_admin=target.is_admin,
-        created_at=target.created_at.isoformat() if target.created_at else "",
+    logger.info("role change: actor=%s target=%s old=%s new=%s",
+                actor.username, target.username, old_role, target.role)
+    await audit_module.record(
+        actor, "user.role_change", "user", str(user_id), target.username,
+        details={"old_role": old_role, "new_role": req.role},
     )
+    return await _user_to_record(target, session)
+
+
+@app.patch("/admin/users/{user_id}/policy-role", response_model=UserRecord)
+async def set_user_policy_role(
+    user_id: int,
+    req: SetPolicyRoleRequest,
+    actor: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Attach (or detach with null) a policy role to a user."""
+    target = await session.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    if req.policy_role_id:
+        role = await session.get(PolicyRole, req.policy_role_id)
+        if role is None:
+            raise HTTPException(status_code=404, detail={"error": "policy role not found"})
+    old_role_id = target.policy_role_id
+    target.policy_role_id = req.policy_role_id
+    await session.commit()
+    await session.refresh(target)
+    await audit_module.record(
+        actor, "user.permissions_change", "user", str(user_id), target.username,
+        details={"old_policy_role_id": old_role_id, "new_policy_role_id": req.policy_role_id},
+    )
+    return await _user_to_record(target, session)
+
+
+# ----- admin: policy roles CRUD -----
+
+@app.get("/admin/policy-roles", response_model=list[PolicyRoleRecord])
+async def list_policy_roles(
+    _: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    from sqlalchemy import select
+    rows = await session.execute(select(PolicyRole).order_by(PolicyRole.created_at))
+    return [
+        PolicyRoleRecord(
+            id=r.id,
+            name=r.name,
+            sections={s: bool((r.sections or {}).get(s, False)) for s in SECTIONS},
+            is_system=r.is_system,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+        )
+        for r in rows.scalars().all()
+    ]
+
+
+@app.post("/admin/policy-roles", response_model=PolicyRoleRecord)
+async def create_policy_role(
+    req: CreatePolicyRoleRequest,
+    actor: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    if await session.get(PolicyRole, req.id):
+        raise HTTPException(status_code=409, detail={"error": "policy role id already exists"})
+    sections = {s: bool(req.sections.get(s, False)) for s in SECTIONS}
+    row = PolicyRole(id=req.id, name=req.name.strip(), sections=sections, is_system=False)
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    await audit_module.record(
+        actor, "policy_role.create", "policy_role", row.id, row.name,
+        details={"sections": sections},
+    )
+    return PolicyRoleRecord(
+        id=row.id, name=row.name, sections=sections,
+        is_system=row.is_system,
+        created_at=row.created_at.isoformat() if row.created_at else "",
+    )
+
+
+@app.patch("/admin/policy-roles/{role_id}", response_model=PolicyRoleRecord)
+async def update_policy_role(
+    role_id: str,
+    req: UpdatePolicyRoleRequest,
+    actor: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    row = await session.get(PolicyRole, role_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"error": "policy role not found"})
+    changes: dict[str, Any] = {}
+    if req.name is not None:
+        new_name = req.name.strip()
+        if new_name and new_name != row.name:
+            row.name = new_name
+            changes["name"] = new_name
+    if req.sections is not None:
+        cur = dict(row.sections or {})
+        for k, v in req.sections.items():
+            if k in SECTIONS:
+                cur[k] = bool(v)
+        row.sections = cur
+        flag_modified(row, "sections")
+        changes["sections"] = cur
+    if not changes:
+        raise HTTPException(status_code=400, detail={"error": "no changes"})
+    await session.commit()
+    await session.refresh(row)
+    await audit_module.record(
+        actor, "policy_role.update", "policy_role", row.id, row.name,
+        details=changes,
+    )
+    return PolicyRoleRecord(
+        id=row.id, name=row.name,
+        sections={s: bool((row.sections or {}).get(s, False)) for s in SECTIONS},
+        is_system=row.is_system,
+        created_at=row.created_at.isoformat() if row.created_at else "",
+    )
+
+
+@app.delete("/admin/policy-roles/{role_id}")
+async def delete_policy_role(
+    role_id: str,
+    actor: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    row = await session.get(PolicyRole, role_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"error": "policy role not found"})
+    if row.is_system:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "system roles cannot be deleted (you can edit their sections instead)"},
+        )
+    name = row.name
+    await session.delete(row)
+    await session.commit()
+    await audit_module.record(
+        actor, "policy_role.delete", "policy_role", role_id, name,
+    )
+    return {"ok": True, "id": role_id}
+
+
+# ----- admin: audit log list -----
+
+@app.get("/admin/audit-logs", response_model=list[AuditLogRecord])
+async def list_audit_logs(
+    _: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    limit: int = 200,
+    actor: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    action: Optional[str] = None,
+):
+    """Most recent events first. Filters compose with AND. Caps at 1000 to
+    keep the admin page responsive — older history can be paged later."""
+    from sqlalchemy import select, desc
+    if limit < 1 or limit > 1000:
+        raise HTTPException(status_code=400, detail="limit must be 1..1000")
+    stmt = select(AuditLog).order_by(desc(AuditLog.created_at)).limit(limit)
+    if actor:
+        stmt = stmt.where(AuditLog.actor_username == actor)
+    if resource_type:
+        stmt = stmt.where(AuditLog.resource_type == resource_type)
+    if action:
+        stmt = stmt.where(AuditLog.action == action)
+    rows = await session.execute(stmt)
+    return [
+        AuditLogRecord(
+            id=r.id,
+            actor_id=r.actor_id,
+            actor_username=r.actor_username,
+            action=r.action,
+            resource_type=r.resource_type,
+            resource_id=r.resource_id,
+            resource_name=r.resource_name,
+            details=r.details,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+        )
+        for r in rows.scalars().all()
+    ]
 
 
 # ----- apps (owner-scoped) -----
@@ -468,6 +723,8 @@ async def get_gpu_availability(
     request: Request,
     gpu: str,
     count: int = 1,
+    # Cross-section: both Inference and Benchmark forms call this, so we gate
+    # on the broader developer role instead of a specific section.
     user: User = Depends(require_developer),
 ):
     """Live check whether `count` of `gpu` can be provisioned right now on
@@ -509,7 +766,7 @@ async def get_gpu_availability(
 async def create_app(
     req: CreateAppRequest,
     request: Request,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     if req.gpu_count < 1 or req.gpu_count > 8:
@@ -611,12 +868,16 @@ async def create_app(
         await rdb.delete(f"app:{req.name}:provision_cooldown_until")
         logger.info("create_app pre-flight provisioned %s for %s", machine_id, req.name)
 
+    await audit_module.record(
+        user, "inference.create", "app", req.name, req.name,
+        details={"model": req.model, "gpu": req.gpu, "gpu_count": req.gpu_count},
+    )
     return CreateAppResponse(app_id=req.name, url=f"/run/{req.name}")
 
 
 @app.get("/apps", response_model=list[AppRecord])
 async def list_apps(
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     from sqlalchemy import select
@@ -646,7 +907,7 @@ async def _load_owned_app(session: AsyncSession, app_id: str, user: User) -> App
 @app.get("/apps/{app_id}", response_model=AppRecord)
 async def get_app_endpoint(
     app_id: str,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     app = await _load_owned_app(session, app_id, user)
@@ -657,7 +918,7 @@ async def get_app_endpoint(
 async def get_app_status(
     app_id: str,
     request: Request,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     """Operational state for the overview tab: live worker count, queue depth,
@@ -702,7 +963,7 @@ async def update_app_autoscaler(
     app_id: str,
     req: UpdateAutoscalerRequest,
     request: Request,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     target = await _load_owned_app(session, app_id, user)
@@ -745,7 +1006,7 @@ async def update_app_autoscaler(
 async def restart_app_workers(
     app_id: str,
     request: Request,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     """Drain + terminate every worker for this app so the autoscaler
@@ -798,7 +1059,7 @@ async def restart_app_workers(
 async def delete_app(
     app_id: str,
     request: Request,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     rdb = request.app.state.redis
@@ -836,9 +1097,14 @@ async def delete_app(
         f"app:{app_id}:last_request_ts",
         f"worker_index:{app_id}",
     )
+    app_name = app.name
     await session.delete(app)
     await session.commit()
 
+    await audit_module.record(
+        user, "inference.delete", "app", app_id, app_name,
+        details={"drained_workers": len(all_machines)},
+    )
     return {"ok": True, "app_id": app_id, "drained_workers": len(all_machines)}
 
 
@@ -893,7 +1159,7 @@ async def run(
     app_id: str,
     payload: dict,
     request: Request,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     rdb = request.app.state.redis
@@ -907,7 +1173,7 @@ async def stream(
     app_id: str,
     payload: dict,
     request: Request,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     rdb = request.app.state.redis
@@ -975,7 +1241,7 @@ async def stream(
 async def get_result(
     request_id: str,
     request: Request,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     """Result lookup. Lazily mirrors completed Redis state into the requests
@@ -1040,7 +1306,7 @@ def _to_request_record(r: ReqRow) -> RequestRecord:
 @app.get("/requests/{request_id}", response_model=RequestRecord)
 async def get_request(
     request_id: str,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     row = await session.get(ReqRow, request_id)
@@ -1055,7 +1321,7 @@ async def get_request(
 async def list_app_requests(
     app_id: str,
     request: Request,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
     limit: int = 50,
     status_filter: Optional[str] = None,
@@ -1196,7 +1462,7 @@ async def _openai_endpoint(
 async def openai_chat_completions(
     payload: dict,
     request: Request,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     return await _openai_endpoint(request, session, user, payload, "/v1/chat/completions")
@@ -1206,7 +1472,7 @@ async def openai_chat_completions(
 async def openai_completions(
     payload: dict,
     request: Request,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     return await _openai_endpoint(request, session, user, payload, "/v1/completions")
@@ -1216,7 +1482,7 @@ async def openai_completions(
 async def openai_embeddings(
     payload: dict,
     request: Request,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     payload.pop("stream", None)
@@ -1312,7 +1578,7 @@ async def get_worker_events(
     machine_id: str,
     request: Request,
     tail: int = 100,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     """Return the worker's lifecycle event timeline (provisioned, registered,
@@ -1346,7 +1612,7 @@ async def get_worker_logs(
     machine_id: str,
     request: Request,
     tail: int = 300,
-    user: User = Depends(require_developer),
+    user: User = Depends(require_section("inference")),
     session: AsyncSession = Depends(get_session),
 ):
     """Return the last `tail` container-stdout lines for a worker. Auth: the

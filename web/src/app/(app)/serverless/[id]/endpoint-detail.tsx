@@ -54,11 +54,7 @@ export function EndpointDetail({ app }: { app: AppRecord }) {
       <div className="border-b border-border bg-sidebar/40 px-6 pt-4 lg:px-10">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3">
-            <div className={cn(
-              "flex h-10 w-10 items-center justify-center rounded-lg text-lg font-semibold",
-              avatar.bg,
-              avatar.text,
-            )}>
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-muted/60 text-lg font-semibold text-muted-foreground">
               {avatar.letter}
             </div>
             <div>

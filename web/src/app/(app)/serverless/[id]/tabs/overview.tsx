@@ -317,7 +317,7 @@ function DetailCard({ app }: { app: AppRecord }) {
           label="Framework"
           value={
             <span className="inline-flex items-center gap-1.5">
-              <span className="flex h-5 w-5 items-center justify-center rounded bg-violet-500/20 text-[10px] font-semibold text-violet-300">
+              <span className="flex h-5 w-5 items-center justify-center rounded border border-border bg-muted text-[10px] font-semibold text-muted-foreground">
                 v
               </span>
               vLLM

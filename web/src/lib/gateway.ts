@@ -5,14 +5,22 @@
 // Bearer-token translation server-side, so the token never hits the bundle.
 
 import type {
+  AdminUserRecord,
   AggregatePoint,
   AppRecord,
+  AuditLogRecord,
   BenchmarkFile,
   BenchmarkRecord,
   BenchmarkTemplate,
+  ComputePod,
+  ComputeSshInfo,
+  ComputeTemplate,
   CreateAppRequest,
   CreateAppResponse,
   CreateBenchmarkRequest,
+  CreateComputeRequest,
+  PolicyRole,
+  SectionKey,
 } from "./types";
 
 export type GpuAvailability = {
@@ -154,6 +162,83 @@ export const gateway = {
       `/benchmarks/templates/${encodeURIComponent(id)}`,
       { method: "DELETE" },
     ),
+
+  // ---- Compute ----
+  listCompute: () => request<ComputePod[]>("/compute"),
+  getCompute: (id: string) =>
+    request<ComputePod>(`/compute/${encodeURIComponent(id)}`),
+  createCompute: (body: CreateComputeRequest) =>
+    request<ComputePod>("/compute", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteCompute: (id: string) =>
+    request<{ ok: boolean; id: string }>(
+      `/compute/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+  getComputeSsh: (id: string) =>
+    request<ComputeSshInfo>(`/compute/${encodeURIComponent(id)}/ssh`),
+  listComputeTemplates: () =>
+    request<ComputeTemplate[]>("/compute/templates"),
+
+  // ---- Admin: users, policy roles, audit ----
+  adminListUsers: () => request<AdminUserRecord[]>("/admin/users"),
+  adminSetUserRole: (id: number, role: "user" | "developer" | "admin") =>
+    request<AdminUserRecord>(`/admin/users/${id}/role`, {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    }),
+  adminSetUserPolicyRole: (id: number, policy_role_id: string | null) =>
+    request<AdminUserRecord>(`/admin/users/${id}/policy-role`, {
+      method: "PATCH",
+      body: JSON.stringify({ policy_role_id }),
+    }),
+  adminDeleteUser: (id: number) =>
+    request<{ ok: boolean; username: string }>(`/admin/users/${id}`, {
+      method: "DELETE",
+    }),
+  adminListPolicyRoles: () => request<PolicyRole[]>("/admin/policy-roles"),
+  adminCreatePolicyRole: (
+    id: string,
+    name: string,
+    sections: Record<SectionKey, boolean>,
+  ) =>
+    request<PolicyRole>("/admin/policy-roles", {
+      method: "POST",
+      body: JSON.stringify({ id, name, sections }),
+    }),
+  adminUpdatePolicyRole: (
+    id: string,
+    body: { name?: string; sections?: Record<SectionKey, boolean> },
+  ) =>
+    request<PolicyRole>(`/admin/policy-roles/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  adminDeletePolicyRole: (id: string) =>
+    request<{ ok: boolean; id: string }>(
+      `/admin/policy-roles/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+  adminListAuditLogs: (
+    params: {
+      limit?: number;
+      actor?: string;
+      resource_type?: string;
+      action?: string;
+    } = {},
+  ) => {
+    const q = new URLSearchParams();
+    if (params.limit) q.set("limit", String(params.limit));
+    if (params.actor) q.set("actor", params.actor);
+    if (params.resource_type) q.set("resource_type", params.resource_type);
+    if (params.action) q.set("action", params.action);
+    const qs = q.toString();
+    return request<AuditLogRecord[]>(
+      `/admin/audit-logs${qs ? `?${qs}` : ""}`,
+    );
+  },
 };
 
 export type AppStatus = {

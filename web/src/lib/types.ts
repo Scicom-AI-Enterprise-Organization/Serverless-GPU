@@ -130,3 +130,93 @@ export type AggregatePoint = {
   median_e2el_ms: number | null;
   p99_e2el_ms: number | null;
 };
+
+// ---- Compute (raw RunPod pods with SSH + JupyterLab) ----
+
+export type ComputeStatus = "creating" | "running" | "failed" | "terminated";
+
+export type ComputePod = {
+  id: string;
+  name: string;
+  gpu_type: string;
+  gpu_count: number;
+  container_disk_gb: number;
+  volume_gb: number;
+  image: string;
+  template_id: string | null;
+  cloud_type: "COMMUNITY" | "SECURE";
+  status: ComputeStatus;
+  runpod_pod_id: string | null;
+  public_ip: string | null;
+  ssh_port: number | null;
+  ssh_user: string;
+  jupyter_url: string | null;
+  jupyter_password: string | null;
+  cost_per_hr: number | null;
+  error_text: string | null;
+  created_by: string;
+  created_at: string;
+  ready_at: string | null;
+  terminated_at: string | null;
+};
+
+export type CreateComputeRequest = {
+  name: string;
+  gpu_type: string;
+  gpu_count?: number;
+  container_disk_gb?: number;
+  volume_gb?: number;
+  template_id: string;
+  cloud_type?: "COMMUNITY" | "SECURE";
+};
+
+export type ComputeTemplate = {
+  id: string;
+  name: string;
+  image: string;
+  description: string;
+};
+
+export type ComputeSshInfo = {
+  ssh_command: string;
+  ssh_user: string;
+  ssh_host: string;
+  ssh_port: number;
+  private_key: string;
+};
+
+// ---- Admin: roles + audit ----
+
+export type SectionKey = "inference" | "benchmark" | "compute";
+
+export type AdminUserRecord = {
+  id: number;
+  username: string;
+  email: string | null;
+  role: "user" | "developer" | "admin";
+  is_admin: boolean;
+  policy_role_id: string | null;
+  policy_role_name: string | null;
+  section_permissions: Record<SectionKey, boolean>;
+  created_at: string;
+};
+
+export type PolicyRole = {
+  id: string;
+  name: string;
+  sections: Record<SectionKey, boolean>;
+  is_system: boolean;
+  created_at: string;
+};
+
+export type AuditLogRecord = {
+  id: number;
+  actor_id: number | null;
+  actor_username: string;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  resource_name: string | null;
+  details: Record<string, unknown> | null;
+  created_at: string;
+};

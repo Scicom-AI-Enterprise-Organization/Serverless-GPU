@@ -29,11 +29,11 @@ const TABS = [
 ] as const;
 
 const STATUS_STYLES: Record<string, string> = {
-  queued: "bg-muted text-muted-foreground",
-  running: "bg-blue-500/15 text-blue-400",
-  done: "bg-emerald-500/15 text-emerald-400",
-  failed: "bg-destructive/15 text-destructive",
-  cancelled: "bg-muted text-muted-foreground",
+  queued: "border border-border bg-muted text-muted-foreground",
+  running: "border border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  done: "border border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  failed: "border border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400",
+  cancelled: "border border-border bg-muted text-muted-foreground",
 };
 
 export function BenchmarkDetail({ bench: initial }: { bench: BenchmarkRecord }) {

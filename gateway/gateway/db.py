@@ -22,6 +22,24 @@ class Base(DeclarativeBase):
     pass
 
 
+class PolicyRole(Base):
+    """Admin-managed role template — a named bundle of section-access flags.
+
+    Users attach to a role; their effective permissions come from the role's
+    `sections` map. Admins bypass entirely. System roles (`is_system=True`)
+    are seeded on first init and can't be deleted from the UI; their sections
+    can still be edited if the admin wants to broaden / narrow them.
+    """
+    __tablename__ = "policy_roles"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # slug
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    sections: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}", nullable=False)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -29,13 +47,43 @@ class User(Base):
     email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    # Roles: "user" (default, no platform access), "developer" (can use
-    # serverless / hub), "admin" (everything + manage roles).
+    # Tier roles: "user" (default, no platform access), "developer" (can use
+    # platform sections, gated by policy_role), "admin" (everything).
     role: Mapped[str] = mapped_column(String(16), default="user", server_default="user", nullable=False)
+    # Attached policy role — defines which sections this user can access.
+    # NULL = no sections. Admins ignore this and have all access.
+    policy_role_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("policy_roles.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
     apps: Mapped[list["App"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
+
+
+class AuditLog(Base):
+    """Immutable record of every state-changing action across the platform.
+
+    `actor_username` is captured as a snapshot so deleted users still appear
+    in history. `details` is a free-form dict for action-specific extras
+    (gpu type, model id, etc.) — keep it small; this table grows linearly.
+    """
+    __tablename__ = "audit_logs"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    actor_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    actor_username: Mapped[str] = mapped_column(String(64), index=True)
+    # Dotted action key, e.g. "compute.create" / "user.permissions_change".
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    # "compute" | "benchmark" | "app" | "user" | …
+    resource_type: Mapped[str] = mapped_column(String(32), index=True)
+    resource_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    resource_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+    )
 
 
 class App(Base):
@@ -87,9 +135,10 @@ def get_database_url() -> str:
 
 async def init_db() -> None:
     global _engine, _sessionmaker
-    # Import side-effect: registers Benchmark / BenchmarkJob tables on Base
-    # before create_all runs.
+    # Import side-effect: registers Benchmark / BenchmarkJob / ComputePod
+    # tables on Base before create_all runs.
     from . import bench  # noqa: F401
+    from . import compute  # noqa: F401
     _engine = create_async_engine(get_database_url(), pool_pre_ping=True)
     _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
     async with _engine.begin() as conn:
@@ -131,6 +180,40 @@ async def init_db() -> None:
                 UPDATE users SET role = CASE WHEN is_admin THEN 'admin' ELSE 'developer' END;
               END IF;
             END $$;
+        """))
+        # Policy roles rollout. We seed four system roles below; `policy_role_id`
+        # is added to users with an FK to policy_roles. Existing developers
+        # are auto-attached to "full-access" so we don't lock anyone out.
+        await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS policy_role_id VARCHAR(64) "
+            "REFERENCES policy_roles(id) ON DELETE SET NULL"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_users_policy_role_id ON users(policy_role_id)"
+        ))
+        # Idempotent seed of system roles.
+        await conn.execute(text("""
+            INSERT INTO policy_roles (id, name, sections, is_system, created_at)
+            VALUES
+              ('full-access', 'Full access',
+                '{"inference": true, "benchmark": true, "compute": true}'::jsonb,
+                true, NOW()),
+              ('inference-only', 'Inference only',
+                '{"inference": true, "benchmark": false, "compute": false}'::jsonb,
+                true, NOW()),
+              ('benchmark-only', 'Benchmark only',
+                '{"inference": false, "benchmark": true, "compute": false}'::jsonb,
+                true, NOW()),
+              ('compute-only', 'Compute only',
+                '{"inference": false, "benchmark": false, "compute": true}'::jsonb,
+                true, NOW())
+            ON CONFLICT (id) DO NOTHING
+        """))
+        # Backfill: any developer/admin without an attached role gets full-access
+        # so the migration doesn't strip access from existing users.
+        await conn.execute(text("""
+            UPDATE users SET policy_role_id = 'full-access'
+            WHERE policy_role_id IS NULL AND role IN ('developer', 'admin')
         """))
 
 

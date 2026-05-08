@@ -31,7 +31,7 @@ export function EndpointGrid({ apps }: { apps: AppRecord[] }) {
   if (apps.length === 0) {
     return (
       <div className="grid place-items-center rounded-xl border border-dashed border-border bg-card/40 px-6 py-16 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
           <Boxes className="h-5 w-5" />
         </div>
         <h2 className="mt-4 text-base font-medium">No endpoints yet</h2>
@@ -69,11 +69,7 @@ function EndpointCard({ app, onDelete }: { app: AppRecord; onDelete: () => void 
     >
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
-          <div className={cn(
-            "flex h-10 w-10 items-center justify-center rounded-md text-base font-semibold",
-            avatar.bg,
-            avatar.text,
-          )}>
+          <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-muted/60 text-base font-semibold text-muted-foreground">
             {avatar.letter}
           </div>
           <div>
@@ -90,7 +86,7 @@ function EndpointCard({ app, onDelete }: { app: AppRecord; onDelete: () => void 
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className="rounded-full bg-status-active/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-status-active">
+          <span className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
             Ready
           </span>
           <DropdownMenu>

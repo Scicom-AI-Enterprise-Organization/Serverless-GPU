@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Boxes, FlaskConical, KeyRound, Lock, Sparkles, Users } from "lucide-react";
+import { Box, Boxes, FlaskConical, KeyRound, Lock, ScrollText, Shield, Sparkles, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSidebarState } from "./sidebar-state";
 
@@ -12,17 +12,32 @@ type Item = {
   href: string;
   icon: React.ElementType;
   locked?: boolean;
+  // If set, only render when sections[section] is true.
+  section?: "inference" | "benchmark" | "compute";
 };
 
 const RESOURCES: Item[] = [
-  { label: "Serverless Inference", href: "/serverless", icon: Boxes },
-  { label: "Benchmark", href: "/benchmark", icon: FlaskConical },
+  { label: "Serverless Inference", href: "/serverless", icon: Boxes, section: "inference" },
+  { label: "Compute", href: "/compute", icon: Box, section: "compute" },
+  { label: "Benchmark", href: "/benchmark", icon: FlaskConical, section: "benchmark" },
   { label: "Autotrain", href: "#", icon: Sparkles, locked: true },
 ];
 const ACCOUNT: Item[] = [{ label: "API keys", href: "/api-keys", icon: KeyRound }];
-const ADMIN: Item[] = [{ label: "Organization", href: "/organization", icon: Users }];
+const ADMIN: Item[] = [
+  { label: "Organization", href: "/organization", icon: Users },
+  { label: "Roles", href: "/admin/roles", icon: Shield },
+  { label: "Audit log", href: "/admin/audit", icon: ScrollText },
+];
 
-export function ConsoleSidebar({ isAdmin = false }: { isAdmin?: boolean } = {}) {
+type Sections = { inference: boolean; benchmark: boolean; compute: boolean };
+
+export function ConsoleSidebar({
+  isAdmin = false,
+  sections = { inference: true, benchmark: true, compute: true },
+}: {
+  isAdmin?: boolean;
+  sections?: Sections;
+} = {}) {
   const pathname = usePathname();
   const { collapsed, mobileOpen, closeMobile } = useSidebarState();
 
@@ -33,13 +48,21 @@ export function ConsoleSidebar({ isAdmin = false }: { isAdmin?: boolean } = {}) 
     if (href === "/benchmark") {
       return pathname === "/benchmark" || pathname.startsWith("/benchmark/");
     }
+    if (href === "/compute") {
+      return pathname === "/compute" || pathname.startsWith("/compute/");
+    }
     return pathname === href;
   };
+
+  const visibleResources = RESOURCES.filter((it) => {
+    if (!it.section) return true;
+    return sections[it.section];
+  });
 
   const groups = (
     <>
       <SidebarGroup label="Resources" collapsed={collapsed}>
-        {RESOURCES.map((item) => (
+        {visibleResources.map((item) => (
           <SidebarItem
             key={item.label}
             item={item}

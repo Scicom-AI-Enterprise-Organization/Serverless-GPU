@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Boxes, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConsoleTopbar } from "@/components/console/topbar";
 import { NoAccessAlert } from "@/components/no-access-alert";
@@ -30,16 +30,11 @@ export default async function ServerlessPage() {
     <div className="flex h-full flex-col">
       <ConsoleTopbar crumbs={[{ label: "Serverless Inference" }]} username={username} />
       <div className="flex-1 overflow-y-auto px-6 py-6 lg:px-10 lg:py-8 scrollbar-thin">
-        <div className="mb-6 flex items-start gap-4 rounded-xl border border-border bg-gradient-to-br from-sky-500/10 via-background to-blue-500/5 p-6">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-sky-500 to-blue-500 text-white shadow-lg shadow-blue-500/30">
-            <Boxes className="h-6 w-6" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Serverless Inference</h1>
-            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              Deploy and scale GPU-powered inference endpoints. Pay per second of compute.
-            </p>
-          </div>
+        <div className="mb-6">
+          <h1 className="text-2xl font-semibold tracking-tight">Serverless Inference</h1>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            Deploy and scale GPU-powered inference endpoints. Pay per second of compute.
+          </p>
         </div>
 
         {noAccess && <NoAccessAlert />}

@@ -1,19 +1,25 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { cookies } from "next/headers";
 import { TOKEN_COOKIE } from "@/lib/auth-cookie";
 import { getMe } from "@/lib/me";
 import { ConsoleTopbar } from "@/components/console/topbar";
-import { OrganizationTable, type OrgUser } from "./table";
+import type { AdminUserRecord, PolicyRole } from "@/lib/types";
+import { OrganizationTable } from "./table";
 
 const GATEWAY = process.env.NEXT_PUBLIC_GATEWAY_URL ?? "http://localhost:8080";
 
-async function loadUsers(token: string): Promise<OrgUser[]> {
-  const r = await fetch(`${GATEWAY}/admin/users`, {
-    headers: { Authorization: `Bearer ${token}` },
-    cache: "no-store",
-  });
-  if (!r.ok) return [];
-  return (await r.json()) as OrgUser[];
+async function loadJson<T>(token: string, path: string): Promise<T | null> {
+  try {
+    const r = await fetch(`${GATEWAY}${path}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    if (!r.ok) return null;
+    return (await r.json()) as T;
+  } catch {
+    return null;
+  }
 }
 
 export default async function OrganizationPage() {
@@ -23,7 +29,10 @@ export default async function OrganizationPage() {
 
   const jar = await cookies();
   const token = jar.get(TOKEN_COOKIE)?.value ?? "";
-  const users = await loadUsers(token);
+  const [users, roles] = await Promise.all([
+    loadJson<AdminUserRecord[]>(token, "/admin/users"),
+    loadJson<PolicyRole[]>(token, "/admin/policy-roles"),
+  ]);
 
   return (
     <div className="flex min-h-full flex-col">
@@ -32,20 +41,29 @@ export default async function OrganizationPage() {
         <header className="mb-8">
           <h1 className="text-2xl font-semibold tracking-tight">Organization</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Manage members and role assignments. Admins manage roles; developers
-            can deploy inference endpoints; users have no platform access until
-            promoted.
+            Members + role assignments. The <span className="font-medium">Tier</span>{" "}
+            decides admin vs developer vs no-access; the{" "}
+            <span className="font-medium">Policy role</span> decides which
+            sections a developer can see (manage these in{" "}
+            <Link href="/admin/roles" className="underline underline-offset-2">
+              Roles
+            </Link>
+            ).
           </p>
         </header>
 
         <section className="rounded-xl border border-border bg-card">
           <div className="flex items-center justify-between border-b border-border px-5 py-4">
             <div>
-              <h2 className="text-base font-semibold">Members ({users.length})</h2>
+              <h2 className="text-base font-semibold">Members ({users?.length ?? 0})</h2>
               <p className="text-xs text-muted-foreground">All users with access to this gateway.</p>
             </div>
           </div>
-          <OrganizationTable users={users} currentUserId={me.user_id} />
+          <OrganizationTable
+            users={users ?? []}
+            policyRoles={roles ?? []}
+            currentUserId={me.user_id}
+          />
         </section>
       </div>
     </div>

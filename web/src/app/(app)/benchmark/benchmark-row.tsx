@@ -7,12 +7,14 @@ import type { BenchmarkRecord } from "@/lib/types";
 import { avatarFor } from "@/lib/avatar";
 import { cn } from "@/lib/utils";
 
+// Status pill is the only place this row uses colour. Pattern matches Compute:
+// soft tint + matching text + neutral border.
 const STATUS_STYLES: Record<string, string> = {
-  queued: "bg-muted text-muted-foreground",
-  running: "bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30",
-  done: "bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30",
-  failed: "bg-destructive/15 text-destructive ring-1 ring-destructive/30",
-  cancelled: "bg-muted text-muted-foreground",
+  queued: "border border-border bg-muted text-muted-foreground",
+  running: "border border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  done: "border border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  failed: "border border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400",
+  cancelled: "border border-border bg-muted text-muted-foreground",
 };
 
 function shortGpu(s: string | null | undefined): string {
@@ -91,13 +93,7 @@ export function BenchmarkRow({ bench }: { bench: BenchmarkRecord }) {
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
-          <div
-            className={cn(
-              "flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-base font-semibold",
-              avatar.bg,
-              avatar.text,
-            )}
-          >
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/60 text-base font-semibold text-muted-foreground">
             {avatar.letter}
           </div>
           <div className="min-w-0">
@@ -105,7 +101,7 @@ export function BenchmarkRow({ bench }: { bench: BenchmarkRecord }) {
               <span className="truncate font-medium text-foreground">{bench.name}</span>
               <span
                 className={cn(
-                  "rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+                  "rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide",
                   STATUS_STYLES[bench.status] ?? STATUS_STYLES.queued,
                 )}
               >
@@ -122,11 +118,11 @@ export function BenchmarkRow({ bench }: { bench: BenchmarkRecord }) {
         </div>
 
         {tput != null && (
-          <div className="shrink-0 rounded-md bg-emerald-500/10 px-2.5 py-1 text-right ring-1 ring-emerald-500/20">
-            <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-emerald-400/80">
+          <div className="shrink-0 rounded-md border border-border bg-muted/40 px-2.5 py-1 text-right">
+            <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
               <TrendingUp className="h-3 w-3" /> Throughput
             </div>
-            <div className="font-mono text-sm font-semibold tabular-nums text-emerald-400">
+            <div className="font-mono text-sm font-semibold tabular-nums">
               {fmtTput(tput)}
             </div>
           </div>
@@ -149,13 +145,13 @@ export function BenchmarkRow({ bench }: { bench: BenchmarkRecord }) {
           </span>
         )}
         {parallelism && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-violet-500/10 px-2 py-0.5 font-mono text-xs text-violet-400 ring-1 ring-violet-500/20">
+          <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 font-mono text-xs">
             {parallelism}
           </span>
         )}
         {benchCount > 1 && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-fuchsia-500/10 px-2 py-0.5 text-xs text-fuchsia-400 ring-1 ring-fuchsia-500/20">
-            <Layers className="h-3 w-3" />
+          <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 text-xs">
+            <Layers className="h-3 w-3 text-muted-foreground" />
             sweep · {benchCount} cells
           </span>
         )}

@@ -54,17 +54,18 @@ type Row = {
 
 type StatMode = "median" | "p99" | "mean";
 
-// Distinct, accessible-ish line colors. Reused across all charts so the same
-// input_len keeps the same color in throughput / TTFT / TPOT / E2EL.
+// Monochrome series palette — same input_len keeps the same shade across
+// throughput / TTFT / TPOT / E2EL charts so they're still readable side-by-
+// side. Inside the colour rule (no decorative hue, only status/availability).
 const LINE_COLORS = [
-  "#a78bfa", // violet-400
-  "#22d3ee", // cyan-400
-  "#34d399", // emerald-400
-  "#fbbf24", // amber-400
-  "#fb7185", // rose-400
-  "#60a5fa", // blue-400
-  "#f472b6", // pink-400
-  "#facc15", // yellow-400
+  "#18181b", // zinc-900
+  "#3f3f46", // zinc-700
+  "#52525b", // zinc-600
+  "#71717a", // zinc-500
+  "#a1a1aa", // zinc-400
+  "#27272a", // zinc-800
+  "#d4d4d8", // zinc-300
+  "#e4e4e7", // zinc-200
 ];
 
 function num(v: unknown): number | null {
@@ -246,7 +247,6 @@ export function ResultsTab({ bench }: { bench: BenchmarkRecord }) {
               ? `c=${bestThroughput.concurrency} · in=${bestThroughput.input_len}`
               : undefined
           }
-          accent="emerald"
         />
         <KpiCard
           icon={<Clock className="h-4 w-4" />}
@@ -257,7 +257,6 @@ export function ResultsTab({ bench }: { bench: BenchmarkRecord }) {
               ? `c=${bestTtft.concurrency} · in=${bestTtft.input_len}`
               : undefined
           }
-          accent="violet"
         />
         <KpiCard
           icon={<Activity className="h-4 w-4" />}
@@ -268,7 +267,6 @@ export function ResultsTab({ bench }: { bench: BenchmarkRecord }) {
               ? `c=${bestTpot.concurrency} · in=${bestTpot.input_len}`
               : undefined
           }
-          accent="cyan"
         />
       </div>
 
@@ -406,28 +404,16 @@ function KpiCard({
   label,
   value,
   sub,
-  accent,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   sub?: string;
-  accent: "emerald" | "violet" | "cyan";
 }) {
-  const ring = {
-    emerald: "ring-emerald-500/20 bg-emerald-500/5",
-    violet: "ring-violet-500/20 bg-violet-500/5",
-    cyan: "ring-cyan-500/20 bg-cyan-500/5",
-  }[accent];
-  const iconBg = {
-    emerald: "bg-emerald-500/15 text-emerald-400",
-    violet: "bg-violet-500/15 text-violet-400",
-    cyan: "bg-cyan-500/15 text-cyan-400",
-  }[accent];
   return (
-    <div className={cn("rounded-lg border border-border p-4 ring-1", ring)}>
+    <div className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-center gap-2">
-        <div className={cn("flex h-7 w-7 items-center justify-center rounded-md", iconBg)}>
+        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-muted text-muted-foreground">
           {icon}
         </div>
         <span className="text-xs uppercase tracking-wide text-muted-foreground">{label}</span>

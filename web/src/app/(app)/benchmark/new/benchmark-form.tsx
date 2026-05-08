@@ -367,19 +367,14 @@ export function BenchmarkForm() {
 
   return (
     <form onSubmit={onSubmit} className="mx-auto max-w-5xl space-y-6 pb-24">
-      {/* Hero */}
-      <div className="flex items-start gap-4 rounded-xl border border-border bg-gradient-to-br from-violet-500/10 via-background to-fuchsia-500/5 p-6">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white shadow-lg shadow-fuchsia-500/30">
-          <FlaskConical className="h-6 w-6" />
-        </div>
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Create benchmark</h1>
-          <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-            Spin up a RunPod GPU, run <span className="font-mono text-xs">benchmaq</span>{" "}
-            against vLLM, and stream the logs back here. Save as a template if
-            you&apos;ll re-run it.
-          </p>
-        </div>
+      {/* Header — plain, no gradient. */}
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Create benchmark</h1>
+        <p className="mt-1 max-w-xl text-sm text-muted-foreground">
+          Spin up a RunPod GPU, run <span className="font-mono text-xs">benchmaq</span>{" "}
+          against vLLM, and stream the logs back here. Save as a template if
+          you&apos;ll re-run it.
+        </p>
       </div>
 
       {/* Templates */}
@@ -767,7 +762,7 @@ export function BenchmarkForm() {
                 spellCheck={false}
                 value={yamlBuf}
                 onChange={(e) => setYamlBuf(e.target.value)}
-                className="rounded-md border border-border bg-zinc-950 font-mono text-xs leading-relaxed text-zinc-200 focus-visible:ring-violet-500/40"
+                className="rounded-md border border-border bg-zinc-950 font-mono text-xs leading-relaxed text-zinc-200 focus-visible:ring-foreground/40"
               />
             </CardContent>
           </Card>
@@ -904,14 +899,14 @@ function SweepToggle({
         className={cn(
           "inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors",
           on
-            ? "border-violet-500/40 bg-violet-500/10 text-violet-400"
+            ? "border-foreground/60 bg-foreground/5 text-foreground"
             : "border-border bg-background text-muted-foreground hover:bg-muted/40",
         )}
       >
         <span
           className={cn(
             "inline-block h-2 w-2 rounded-full",
-            on ? "bg-violet-400" : "bg-muted-foreground/40",
+            on ? "bg-foreground" : "bg-muted-foreground/40",
           )}
         />
         Sweep
@@ -1150,14 +1145,14 @@ function ToggleRow({
       className={cn(
         "flex w-full items-start gap-3 rounded-md border p-3 text-left transition-colors",
         checked
-          ? "border-violet-500/40 bg-violet-500/5"
+          ? "border-foreground/60 bg-foreground/5"
           : "border-border bg-background hover:bg-muted/30",
       )}
     >
       <span
         className={cn(
           "mt-0.5 inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors",
-          checked ? "bg-violet-500" : "bg-muted-foreground/30",
+          checked ? "bg-foreground" : "bg-muted-foreground/30",
         )}
       >
         <span

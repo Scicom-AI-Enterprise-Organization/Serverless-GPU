@@ -41,7 +41,8 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .auth import current_user
+from . import audit
+from .auth import require_section
 from .db import Base, User, get_session, session_factory
 
 logger = logging.getLogger("gateway.bench")
@@ -484,7 +485,7 @@ def _to_record(b: Benchmark, owner_username: str) -> BenchmarkRecord:
 
 @router.get("/templates", response_model=list[TemplateRecord])
 async def list_templates(
-    user: User = Depends(current_user),
+    user: User = Depends(require_section("benchmark")),
     session: AsyncSession = Depends(get_session),
 ):
     rows = await session.execute(
@@ -506,7 +507,7 @@ async def list_templates(
 @router.post("/templates", response_model=TemplateRecord)
 async def create_template(
     body: CreateTemplateRequest,
-    user: User = Depends(current_user),
+    user: User = Depends(require_section("benchmark")),
     session: AsyncSession = Depends(get_session),
 ):
     # Validate the YAML at least parses — saving garbage helps no one.
@@ -535,7 +536,7 @@ async def create_template(
 @router.delete("/templates/{template_id}")
 async def delete_template(
     template_id: str,
-    user: User = Depends(current_user),
+    user: User = Depends(require_section("benchmark")),
     session: AsyncSession = Depends(get_session),
 ):
     t = await session.get(BenchmarkTemplate, template_id)
@@ -555,7 +556,7 @@ async def delete_template(
 async def create_benchmark(
     body: CreateBenchmarkRequest,
     request: Request,
-    user: User = Depends(current_user),
+    user: User = Depends(require_section("benchmark")),
     session: AsyncSession = Depends(get_session),
 ):
     try:
@@ -584,6 +585,8 @@ async def create_benchmark(
     redis = request.app.state.redis
     asyncio.create_task(_safe_run(redis, bench_id, body.config_yaml))
 
+    await audit.record(user, "benchmark.create", "benchmark", bench_id, body.name)
+
     bench = await session.get(Benchmark, bench_id)
     return _to_record(bench, user.username)
 
@@ -606,7 +609,7 @@ async def _safe_run(redis, bench_id: str, raw_yaml: str) -> None:
 
 @router.get("", response_model=list[BenchmarkRecord])
 async def list_benchmarks(
-    user: User = Depends(current_user),
+    user: User = Depends(require_section("benchmark")),
     session: AsyncSession = Depends(get_session),
 ):
     if user.is_admin:
@@ -700,7 +703,7 @@ def _parse_config(yaml_text: str) -> dict:
 
 @router.get("/_aggregate", response_model=list[AggregatePoint])
 async def aggregate(
-    user: User = Depends(current_user),
+    user: User = Depends(require_section("benchmark")),
     session: AsyncSession = Depends(get_session),
 ):
     cache_key = "admin" if user.is_admin else f"u{user.id}"
@@ -793,7 +796,7 @@ async def aggregate(
 @router.get("/{bench_id}", response_model=BenchmarkRecord)
 async def get_benchmark(
     bench_id: str,
-    user: User = Depends(current_user),
+    user: User = Depends(require_section("benchmark")),
     session: AsyncSession = Depends(get_session),
 ):
     b = await session.get(Benchmark, bench_id)
@@ -808,7 +811,7 @@ async def get_benchmark(
 @router.delete("/{bench_id}")
 async def delete_benchmark(
     bench_id: str,
-    user: User = Depends(current_user),
+    user: User = Depends(require_section("benchmark")),
     session: AsyncSession = Depends(get_session),
 ):
     b = await session.get(Benchmark, bench_id)
@@ -822,8 +825,10 @@ async def delete_benchmark(
             proc.kill()
         except Exception:
             pass
+    bench_name = b.name
     await session.delete(b)
     await session.commit()
+    await audit.record(user, "benchmark.delete", "benchmark", bench_id, bench_name)
     return {"ok": True, "id": bench_id}
 
 
@@ -831,7 +836,7 @@ async def delete_benchmark(
 async def stream_logs(
     bench_id: str,
     request: Request,
-    user: User = Depends(current_user),
+    user: User = Depends(require_section("benchmark")),
     session: AsyncSession = Depends(get_session),
 ):
     b = await session.get(Benchmark, bench_id)
@@ -875,7 +880,7 @@ async def stream_logs(
 @router.get("/{bench_id}/files", response_model=list[FileRecord])
 async def list_files(
     bench_id: str,
-    user: User = Depends(current_user),
+    user: User = Depends(require_section("benchmark")),
     session: AsyncSession = Depends(get_session),
 ):
     b = await session.get(Benchmark, bench_id)

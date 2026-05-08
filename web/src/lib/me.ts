@@ -6,12 +6,16 @@ import { TOKEN_COOKIE } from "./auth-cookie";
 
 const GATEWAY = process.env.NEXT_PUBLIC_GATEWAY_URL ?? "http://localhost:8080";
 
+export type Section = "inference" | "benchmark" | "compute";
+
 export type Me = {
   user_id: number;
   username: string;
   email?: string | null;
   is_admin: boolean;
   role: "user" | "developer" | "admin";
+  policy_role_id: string | null;
+  sections: Record<Section, boolean>;
 };
 
 export async function getMe(): Promise<Me | null> {
