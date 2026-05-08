@@ -48,6 +48,53 @@ serverlessgpu run qwen --payload '{"prompt": "hello"}'
 The fake worker emits canned responses — proves the full control-plane round-trip
 without burning GPU money. Phase 1 swaps it for a real PI worker.
 
+## Running Locally
+
+Develop the full stack on your laptop — UI, backend, db — with a fake provider so
+nothing tries to dial out to RunPod / PI. Three terminals.
+
+**Pre-reqs:** Docker, [uv](https://docs.astral.sh/uv/) (Python deps), Node 20+.
+
+```bash
+# 1. Postgres + Redis (only — leave the gateway/worker services off)
+docker compose up -d postgres redis
+
+# 2. Gateway (FastAPI on :8080, reads gateway/.env)
+uv venv .venv
+uv pip install -e ./gateway
+.venv/bin/gateway
+
+# 3. Web (Next.js on :3000, reads web/.env.local)
+cd web && npm install && npm run dev
+```
+
+Or, if you've already run `make install` (which uvs all three Python packages
+into `.venv/`), just `.venv/bin/gateway` directly.
+
+Open `http://localhost:3000`. Login `admin / admin`. Deploy an endpoint from the UI
+(or `serverlessgpu deploy ...`) → an in-process fake worker handles the request.
+
+**Env files:**
+
+| File | What it sets |
+|---|---|
+| `gateway/.env` | `DATABASE_URL`, `REDIS_URL`, `AUTH_DISABLED=1`, `PROVIDER=fake`, `AUTOSCALER=0` |
+| `web/.env.local` | `NEXT_PUBLIC_GATEWAY_URL=http://localhost:8080` |
+
+Both are gitignored. Templates: `gateway/.env.example`, `web/.env.example`.
+
+**Reset state:**
+
+```bash
+docker compose down -v   # nukes postgres + redis volumes
+```
+
+**Why no real GPU locally?** Real provisioning (`PROVIDER=runpod` or `=primeintellect`)
+spawns a pod on the provider's network that has to phone home to your gateway and
+redis. `localhost` isn't reachable from the public internet, so the worker can't
+register. For real-GPU testing, use the deployed prod gateway instead — see
+[docs/DEPLOY.md](docs/DEPLOY.md).
+
 ## Going further
 
 | Doc | What's in it |
