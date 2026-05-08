@@ -270,7 +270,7 @@ export function PodDetail({ initial }: { initial: ComputePod }) {
             <div className="space-y-3">
               <Row label="Command">
                 <div className="flex flex-1 items-center gap-2">
-                  <code className="flex-1 truncate rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-xs">
+                  <code className="terminal-block flex-1 truncate rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-xs">
                     {sshCmd}
                   </code>
                   <Button

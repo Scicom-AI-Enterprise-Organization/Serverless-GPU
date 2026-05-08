@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Box, Boxes, CheckSquare, FlaskConical, KeyRound, Lock, ScrollText, Server, Shield, Sparkles, Users } from "lucide-react";
+import { Box, Boxes, CheckSquare, FlaskConical, KeyRound, Lock, Plus, ScrollText, Server, Settings, Shield, Sparkles, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSidebarState } from "./sidebar-state";
 
@@ -14,15 +14,28 @@ type Item = {
   locked?: boolean;
   // If set, only render when sections[section] is true.
   section?: "inference" | "benchmark" | "compute";
+  // Inline shortcut rendered to the right of the row — used for
+  // "+ new pod" / "+ new endpoint" style quick-create links so users
+  // don't have to land on the list page first.
+  quickAction?: { href: string; label: string };
 };
 
 const RESOURCES: Item[] = [
   { label: "Serverless Inference", href: "/serverless", icon: Boxes, section: "inference" },
-  { label: "Compute", href: "/compute", icon: Box, section: "compute" },
+  {
+    label: "Compute",
+    href: "/compute",
+    icon: Box,
+    section: "compute",
+    quickAction: { href: "/compute/new", label: "New pod" },
+  },
   { label: "Benchmark", href: "/benchmark", icon: FlaskConical, section: "benchmark" },
   { label: "Autotrain", href: "#", icon: Sparkles, locked: true },
 ];
-const ACCOUNT: Item[] = [{ label: "API keys", href: "/api-keys", icon: KeyRound }];
+const ACCOUNT: Item[] = [
+  { label: "API keys", href: "/api-keys", icon: KeyRound },
+  { label: "Settings", href: "/settings", icon: Settings },
+];
 const ADMIN: Item[] = [
   { label: "Organization", href: "/organization", icon: Users },
   { label: "Roles", href: "/admin/roles", icon: Shield },
@@ -34,14 +47,24 @@ const MANAGE: Item[] = [
 ];
 
 type Sections = { inference: boolean; benchmark: boolean; compute: boolean };
+type Counts = { pendingApprovals: number; provisioned: number };
 
 export function ConsoleSidebar({
   isAdmin = false,
   sections = { inference: true, benchmark: true, compute: true },
+  counts = { pendingApprovals: 0, provisioned: 0 },
 }: {
   isAdmin?: boolean;
   sections?: Sections;
+  counts?: Counts;
 } = {}) {
+  // Map of href → numeric badge to show next to the item label. Always
+  // present (default 0) so admins know the rail is wired up even when
+  // nothing's pending.
+  const BADGES: Record<string, number> = {
+    "/admin/compute-approvals": counts.pendingApprovals,
+    "/admin/provisioned": counts.provisioned,
+  };
   const pathname = usePathname();
   const { collapsed, mobileOpen, closeMobile } = useSidebarState();
 
@@ -96,6 +119,7 @@ export function ConsoleSidebar({
                 active={isActive(item.href)}
                 collapsed={collapsed}
                 onNavigate={closeMobile}
+                badge={BADGES[item.href]}
               />
             ))}
           </SidebarGroup>
@@ -193,11 +217,15 @@ function SidebarItem({
   active,
   collapsed,
   onNavigate,
+  badge,
 }: {
   item: Item;
   active?: boolean;
   collapsed?: boolean;
   onNavigate?: () => void;
+  /** Optional numeric badge (e.g. count of pending items). Defaults
+   * undefined = no badge; pass 0 to show a neutral "0" pill. */
+  badge?: number;
 }) {
   if (item.locked) {
     return (
@@ -222,14 +250,17 @@ function SidebarItem({
     );
   }
   return (
-    <li>
+    <li className="relative">
       <Link
         href={item.href}
         onClick={onNavigate}
         title={collapsed ? item.label : undefined}
         className={cn(
-          "group flex items-center rounded-md px-2 py-1.5 text-sm transition-colors",
+          "group flex w-full items-center rounded-md px-2 py-1.5 text-sm transition-colors",
           collapsed ? "justify-center" : "gap-2",
+          // Reserve space on the right so quickAction sits inline without
+          // overlapping the label.
+          !collapsed && item.quickAction && "pr-9",
           active
             ? "bg-sidebar-accent text-sidebar-accent-foreground"
             : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
@@ -237,7 +268,23 @@ function SidebarItem({
       >
         <item.icon className="h-4 w-4 shrink-0" />
         {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
+        {!collapsed && badge !== undefined && (
+          <span className="ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-md border border-border bg-muted/60 px-1.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+            {badge}
+          </span>
+        )}
       </Link>
+      {!collapsed && item.quickAction && (
+        <Link
+          href={item.quickAction.href}
+          onClick={onNavigate}
+          aria-label={item.quickAction.label}
+          title={item.quickAction.label}
+          className="absolute right-1.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:border-foreground/40 hover:bg-sidebar-accent/60 hover:text-foreground"
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </Link>
+      )}
     </li>
   );
 }

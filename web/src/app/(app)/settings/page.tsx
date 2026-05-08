@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { ConsoleTopbar } from "@/components/console/topbar";
 import { getMe } from "@/lib/me";
 import { ProfileForm } from "./profile-form";
+import { AppearanceSettings } from "./appearance";
 
 export default async function SettingsPage() {
   const me = await getMe();
@@ -10,8 +11,8 @@ export default async function SettingsPage() {
   return (
     <div className="flex min-h-full flex-col">
       <ConsoleTopbar crumbs={[{ label: "Settings" }]} username={me.username} />
-      <div className="mx-auto w-full max-w-2xl px-6 py-10">
-        <header className="mb-8">
+      <div className="mx-auto w-full max-w-2xl px-6 py-10 space-y-8">
+        <header>
           <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Your profile. Username and email are tied to your account and can&apos;t be changed here.
@@ -23,6 +24,8 @@ export default async function SettingsPage() {
           email={me.email ?? ""}
           role={me.role}
         />
+
+        <AppearanceSettings />
       </div>
     </div>
   );

@@ -90,7 +90,7 @@ export function LogsTab({ bench }: { bench: BenchmarkRecord }) {
       <div
         ref={containerRef}
         onScroll={onScroll}
-        className="h-[60vh] overflow-y-auto rounded-md border border-border bg-zinc-950 p-3 font-mono text-xs leading-relaxed text-zinc-200"
+        className="terminal-block h-[60vh] overflow-y-auto rounded-md border border-border bg-zinc-950 p-3 font-mono text-xs leading-relaxed text-zinc-200"
       >
         {lines.length === 0 ? (
           <div className="text-zinc-500">

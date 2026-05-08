@@ -740,7 +740,7 @@ export function BenchmarkForm() {
               </div>
               <Info className="h-3.5 w-3.5 text-muted-foreground" />
             </summary>
-            <pre className="overflow-x-auto rounded-b-lg border-t border-border bg-zinc-950 px-4 py-3 font-mono text-xs leading-relaxed text-zinc-200">
+            <pre className="terminal-block overflow-x-auto rounded-b-lg border-t border-border bg-zinc-950 px-4 py-3 font-mono text-xs leading-relaxed text-zinc-200">
               {formYaml}
             </pre>
           </details>

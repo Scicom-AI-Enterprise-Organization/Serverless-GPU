@@ -426,7 +426,7 @@ function RawYamlBlock({ yaml: src }: { yaml: string }) {
           {copied ? "Copied" : "Copy"}
         </Button>
       </summary>
-      <pre className="overflow-x-auto rounded-b-lg border-t border-border bg-zinc-950 px-4 py-3 font-mono text-xs leading-relaxed text-zinc-200">
+      <pre className="terminal-block overflow-x-auto rounded-b-lg border-t border-border bg-zinc-950 px-4 py-3 font-mono text-xs leading-relaxed text-zinc-200">
         {src}
       </pre>
     </details>

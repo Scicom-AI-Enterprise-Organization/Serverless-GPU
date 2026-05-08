@@ -204,3 +204,360 @@
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
   background: color-mix(in oklch, var(--muted-foreground) 50%, transparent);
 }
+
+/* ---- Terminal theme ----------------------------------------------------- */
+/* User-selectable styling for terminal-ish blocks (SSH commands, error
+ * dumps, etc). Default = neutral, matches the rest of the UI. The other
+ * themes are intentionally loud — opt-in fun, not the default. Toggle from
+ * /settings; preference lives in localStorage and is restored on mount. */
+
+.terminal-block {
+  /* Defaults defined inline on each element via Tailwind. Themed variants
+   * below override via more-specific selectors. */
+}
+
+[data-terminal-theme="classic"] .terminal-block {
+  background: #0a0a0a !important;
+  color: #4ade80 !important;
+  border-color: #16a34a !important;
+  text-shadow: 0 0 4px rgba(74, 222, 128, 0.6),
+               0 0 10px rgba(74, 222, 128, 0.35);
+  /* VT323 is a chunky single-weight CRT font — pairs perfectly with the
+   * green phosphor look. Bump font-size up since VT323 reads narrower. */
+  font-family: var(--font-vt323), "Courier New", ui-monospace, monospace !important;
+  font-size: 1.15em !important;
+  letter-spacing: 0.02em !important;
+}
+/* Wildcard descendant override — log lines often ship inline colour spans
+ * (ANSI → CSS) that would otherwise punch through the parent's green. */
+[data-terminal-theme="classic"] .terminal-block,
+[data-terminal-theme="classic"] .terminal-block * {
+  color: #4ade80 !important;
+}
+
+[data-terminal-theme="rainbow"] .terminal-block {
+  /* Two stacked layers: a translucent dark overlay sitting on top of the
+   * rainbow gradient. The overlay tones the rainbow down enough for white
+   * text to read clearly without losing the spectrum vibe. hue-rotate
+   * animates the whole element; black/white have no hue so the overlay
+   * stays dark and the text stays white as the colours cycle. */
+  background-image:
+    linear-gradient(rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0.45)),
+    linear-gradient(
+      90deg,
+      #ff0080, #ff8c00, #ffd700, #00d26a, #00bfff, #8a2be2, #ff0080
+    ) !important;
+  background-size: 100% 100%, 100% 100% !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.5) !important;
+  /* Text outline so glyphs stay readable even on the brightest stripes. */
+  text-shadow:
+    -1px -1px 0 rgba(0, 0, 0, 0.85),
+     1px -1px 0 rgba(0, 0, 0, 0.85),
+    -1px  1px 0 rgba(0, 0, 0, 0.85),
+     1px  1px 0 rgba(0, 0, 0, 0.85),
+     0 0 6px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 0 12px rgba(255, 105, 180, 0.4), 0 0 24px rgba(138, 43, 226, 0.25);
+  animation: rainbow-hue 1.2s linear infinite !important;
+  will-change: filter;
+}
+[data-terminal-theme="rainbow"] .terminal-block,
+[data-terminal-theme="rainbow"] .terminal-block * {
+  color: #ffffff !important;
+}
+
+[data-terminal-theme="sparkle"] .terminal-block {
+  position: relative;
+  background: radial-gradient(circle at 20% 20%, #1a0033 0%, #000010 60%) !important;
+  color: #f0e6ff !important;
+  border-color: #b388ff !important;
+  text-shadow: 0 0 6px #b388ff, 0 0 12px #ff66ff;
+  animation: sparkle-pulse 2.5s ease-in-out infinite alternate;
+  box-shadow: 0 0 16px rgba(179, 136, 255, 0.5);
+}
+/* No static dot field — the only sparkles are the cursor trail particles
+ * spawned by terminal-theme-init.tsx. Keeps the terminal-block legible. */
+[data-terminal-theme="sparkle"] .terminal-block:hover {
+  box-shadow: 0 0 28px rgba(255, 102, 255, 0.8), 0 0 48px rgba(179, 136, 255, 0.5);
+}
+[data-terminal-theme="sparkle"] .terminal-block,
+[data-terminal-theme="sparkle"] .terminal-block * {
+  color: #f0e6ff !important;
+}
+
+/* ---- Christmas: snowy night sky + falling flakes + tiny snowman ☃️ ---- */
+[data-terminal-theme="christmas"] .terminal-block {
+  position: relative;
+  background: linear-gradient(180deg, #0a1834 0%, #1f3b6b 100%) !important;
+  color: #ffffff !important;
+  border-color: #c0392b !important;
+  text-shadow: 0 0 6px rgba(255, 255, 255, 0.4);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15),
+              0 0 20px rgba(46, 204, 113, 0.2);
+  /* No overflow:hidden here — the .terminal-block on the logs page is a
+   * scroll container (overflow-y: auto). Setting overflow shorthand kills
+   * scrolling. The repeating snow tile looks fine bleeding to edges. */
+}
+[data-terminal-theme="christmas"] .terminal-block::before {
+  /* Falling snow. To kill the obvious grid: each layer uses a coprime
+   * tile size (~prime numbers) so columns from different layers never
+   * line up; flake positions inside each tile are also offset off the
+   * 50% midline; opacity varies per layer so some flakes look closer
+   * than others. Two animations stacked: snow-fall for downward motion,
+   * snow-sway for slight side-to-side drift. */
+  content: "";
+  position: sticky;
+  top: 0;
+  left: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin-bottom: -100%;
+  background-image:
+    /* Big chunky flakes — slowest layer. */
+    radial-gradient(4px 4px at 18% 22%, rgba(255,255,255,0.95) 50%, transparent 70%),
+    radial-gradient(3px 3px at 67% 73%, rgba(255,255,255,0.85) 50%, transparent 70%),
+    radial-gradient(5px 5px at 41% 88%, rgba(255,255,255,0.9)  50%, transparent 70%),
+    /* Medium flakes — middle layer. */
+    radial-gradient(3px 3px at 33% 14%, rgba(255,255,255,0.8)  50%, transparent 70%),
+    radial-gradient(2px 2px at 78% 41%, rgba(255,255,255,0.9)  50%, transparent 70%),
+    radial-gradient(2.5px 2.5px at 12% 67%, rgba(255,255,255,0.75) 50%, transparent 70%),
+    /* Tiny pixel-dust flakes — fastest layer. */
+    radial-gradient(1.5px 1.5px at 47% 31%, rgba(255,255,255,0.7) 50%, transparent 70%),
+    radial-gradient(1px 1px   at 83% 86%, rgba(255,255,255,0.65) 50%, transparent 70%),
+    radial-gradient(1.5px 1.5px at 24% 49%, rgba(255,255,255,0.7) 50%, transparent 70%);
+  /* Coprime tile sizes (227, 163, 97 px) so the three layers never
+   * resync into a visible grid. */
+  background-size:
+    227px 227px, 227px 227px, 227px 227px,
+    163px 163px, 163px 163px, 163px 163px,
+    97px 97px,  97px 97px,  97px 97px;
+  background-repeat: repeat;
+  pointer-events: none;
+  animation: snow-fall 2.2s linear infinite, snow-sway 3s ease-in-out infinite alternate;
+  mix-blend-mode: screen;
+  z-index: 1;
+}
+[data-terminal-theme="christmas"] .terminal-block::after {
+  /* sticky also pins the snowman to the viewport bottom-right corner so
+   * he stays visible while the user scrolls through logs. */
+  content: "☃️";
+  position: sticky;
+  display: block;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  margin-top: -32px;
+  margin-right: 12px;
+  bottom: 8px;
+  font-size: 22px;
+  line-height: 1;
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.7));
+  pointer-events: none;
+  animation: snowman-bob 3.5s ease-in-out infinite alternate;
+  z-index: 2;
+}
+[data-terminal-theme="christmas"] .terminal-block,
+[data-terminal-theme="christmas"] .terminal-block * {
+  color: #ffffff !important;
+}
+
+@keyframes rainbow-hue {
+  0%   { filter: hue-rotate(0deg); }
+  100% { filter: hue-rotate(360deg); }
+}
+
+/* Force the animation even if the user has prefers-reduced-motion enabled
+ * — they explicitly opted into a "rainbow" theme, the motion IS the point.
+ * tw-animate-css ships a global reduced-motion override that would
+ * otherwise kill our keyframes. */
+@media (prefers-reduced-motion: reduce) {
+  [data-terminal-theme="rainbow"] .terminal-block,
+  .terminal-preview-rainbow {
+    animation: rainbow-hue 1.2s linear infinite !important;
+  }
+  [data-terminal-theme="sparkle"] .terminal-block::before {
+    animation: sparkle-twinkle 1.8s ease-in-out infinite alternate !important;
+  }
+  [data-terminal-theme="sparkle"] .terminal-block:hover::before {
+    animation: sparkle-burst 0.9s ease-in-out infinite alternate !important;
+  }
+  [data-terminal-theme="christmas"] .terminal-block::before {
+    animation: snow-fall 2.2s linear infinite, snow-sway 3s ease-in-out infinite alternate !important;
+  }
+  [data-terminal-theme="christmas"] .terminal-block::after {
+    animation: snowman-bob 3.5s ease-in-out infinite alternate !important;
+  }
+}
+@keyframes sparkle-pulse {
+  from { box-shadow: 0 0 12px rgba(179, 136, 255, 0.4); }
+  to   { box-shadow: 0 0 22px rgba(255, 102, 255, 0.6); }
+}
+@keyframes sparkle-twinkle {
+  from { opacity: 0.4; transform: scale(0.95); }
+  to   { opacity: 1;   transform: scale(1.05); }
+}
+@keyframes sparkle-burst {
+  from { opacity: 0.7; transform: scale(0.9) rotate(-2deg); }
+  to   { opacity: 1;   transform: scale(1.08) rotate(2deg); }
+}
+@keyframes snow-fall {
+  /* Each layer scrolls by exactly one of its tile heights (227 / 163 /
+   * 97) over the same duration — bigger tiles look slow, small tiles
+   * look fast, giving real parallax. Within each tile-size group the
+   * three flakes share the displacement, but they're offset enough that
+   * eye doesn't catch the repeat. */
+  from {
+    background-position:
+      0 0,   0 0,   0 0,
+      0 0,   0 0,   0 0,
+      0 0,   0 0,   0 0;
+  }
+  to {
+    background-position:
+      0 227px, 0 227px, 0 227px,
+      0 163px, 0 163px, 0 163px,
+      0 97px,  0 97px,  0 97px;
+  }
+}
+@keyframes snow-sway {
+  /* Tiny lateral drift so flakes don't look like they're on a rail. */
+  from { transform: translateX(-4px); }
+  to   { transform: translateX(4px); }
+}
+@keyframes sparkle-drift {
+  from { background-position: 0 0,    0 0; }
+  to   { background-position: 40px 40px, -80px 80px; }
+}
+@keyframes snowman-bob {
+  from { transform: translateY(0) rotate(-3deg); }
+  to   { transform: translateY(-3px) rotate(3deg); }
+}
+
+/* Preview swatches shown in /settings — independent of the active global
+ * theme so each option always looks like itself. */
+.terminal-preview {
+  display: block;
+  border-radius: 6px;
+  border: 1px solid hsl(var(--border));
+  padding: 4px 8px;
+  font-family: var(--font-jetbrains-mono), ui-monospace, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.terminal-preview-default {
+  background: color-mix(in oklch, hsl(var(--muted)) 60%, transparent);
+  color: hsl(var(--foreground));
+}
+.terminal-preview-classic {
+  background: #0a0a0a;
+  color: #4ade80;
+  border-color: #16a34a;
+  text-shadow: 0 0 4px rgba(74, 222, 128, 0.5);
+}
+.terminal-preview-rainbow {
+  background-image:
+    linear-gradient(rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0.45)),
+    linear-gradient(
+      90deg,
+      #ff0080, #ff8c00, #ffd700, #00d26a, #00bfff, #8a2be2, #ff0080
+    );
+  background-size: 100% 100%, 100% 100%;
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.5);
+  text-shadow:
+    -1px -1px 0 rgba(0, 0, 0, 0.85),
+     1px -1px 0 rgba(0, 0, 0, 0.85),
+    -1px  1px 0 rgba(0, 0, 0, 0.85),
+     1px  1px 0 rgba(0, 0, 0, 0.85);
+  box-shadow: 0 0 12px rgba(255, 105, 180, 0.4);
+  animation: rainbow-hue 1.2s linear infinite;
+  will-change: filter;
+}
+.terminal-preview-sparkle {
+  background: radial-gradient(circle at 20% 20%, #1a0033 0%, #000010 60%);
+  color: #f0e6ff;
+  border-color: #b388ff;
+  text-shadow: 0 0 6px #b388ff, 0 0 12px #ff66ff;
+  box-shadow: 0 0 16px rgba(179, 136, 255, 0.5);
+}
+.terminal-preview-christmas {
+  position: relative;
+  background: linear-gradient(180deg, #0a1834 0%, #1f3b6b 100%);
+  color: #ffffff;
+  border-color: #c0392b;
+  text-shadow: 0 0 4px rgba(255, 255, 255, 0.4);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+  /* Tiny snowman tucked in the right edge */
+}
+.terminal-preview-christmas::after {
+  content: " ☃️";
+}
+
+/* ---- Sparkle cursor particles -----------------------------------------
+ * Spawned by terminal-theme-init.tsx when the Sparkle theme is active.
+ * Each particle is position:fixed so it floats over scroll containers and
+ * iframes alike. Animation: pop in, drift down with a sideways tilt
+ * (--drift), then fade out. Cleaned up via animationend in the JS side. */
+.sparkle-particle {
+  position: fixed;
+  z-index: 9999; /* on top of everything so the trail is always visible */
+  pointer-events: none;
+  user-select: none;
+  line-height: 1;
+  text-shadow: 0 0 4px currentColor, 0 0 8px currentColor;
+  transform: translate(-50%, -50%) scale(0.4);
+  animation: sparkle-trail 0.85s ease-out forwards;
+  will-change: transform, opacity;
+}
+@keyframes sparkle-trail {
+  0%   { opacity: 0;    transform: translate(-50%, -50%) scale(0.4) rotate(0deg); }
+  25%  { opacity: 0.85; transform: translate(-50%, -50%) scale(1) rotate(30deg); }
+  100% {
+    opacity: 0;
+    transform: translate(
+      calc(-50% + var(--drift, 0px)),
+      calc(-50% + 22px)
+    ) scale(0.4) rotate(120deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sparkle-particle {
+    animation: sparkle-trail 0.7s ease-out forwards !important;
+  }
+}
+
+/* Santa & sleigh flying across the terminal block. Injected by
+ * terminal-theme-init.tsx whenever the Christmas theme is active. Sticky
+ * so he stays visible even as you scroll a long log. */
+[data-terminal-theme="christmas"] .terminal-block .santa-flier {
+  position: sticky;
+  display: inline-block;
+  top: 8px;
+  left: 0;
+  width: max-content;
+  margin-bottom: -100%;
+  font-size: 22px;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+  z-index: 3;
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.6));
+  animation: santa-fly 9s linear infinite;
+  white-space: nowrap;
+}
+@keyframes santa-fly {
+  0%   { transform: translateX(-30%) translateY(0)     scaleX(-1); }
+  45%  { transform: translateX(60vw) translateY(-6px)  scaleX(-1); }
+  50%  { transform: translateX(120vw) translateY(0)    scaleX(-1); }
+  /* off-screen reset (no transition because of step) */
+  50.01% { transform: translateX(-30%) translateY(0) scaleX(-1); }
+  100% { transform: translateX(-30%) translateY(0) scaleX(-1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-terminal-theme="christmas"] .terminal-block .santa-flier {
+    animation: santa-fly 9s linear infinite !important;
+  }
+}

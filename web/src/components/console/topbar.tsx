@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ChevronRight, LogIn, Menu, PanelLeft } from "lucide-react";
+import { ChevronRight, LogIn, Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "./theme-toggle";
 import { UserMenu } from "./user-menu";
@@ -22,14 +22,15 @@ export function ConsoleTopbar({
   return (
     <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-sidebar px-3 lg:px-4">
       <div className="flex min-w-0 items-center gap-2">
+        {/* Mobile-only menu button. Desktop sidebar is permanent — collapsing
+         * is intentionally disabled. */}
         <button
           type="button"
           onClick={togglePanel}
-          className="inline-flex shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="inline-flex shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
           aria-label="Toggle sidebar"
         >
-          <PanelLeft className="hidden h-4 w-4 md:block" />
-          <Menu className="h-4 w-4 md:hidden" />
+          <Menu className="h-4 w-4" />
         </button>
         <nav className="ml-2 hidden min-w-0 items-center gap-1 text-sm md:flex">
           {crumbs.map((c, i) => (
