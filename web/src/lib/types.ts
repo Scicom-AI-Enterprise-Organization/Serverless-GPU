@@ -206,6 +206,8 @@ export type AdminUserRecord = {
   policy_role_name: string | null;
   section_permissions: Record<SectionKey, boolean>;
   created_at: string;
+  auth_provider: "password" | "github";
+  github_id: string | null;
 };
 
 export type PolicyRole = {

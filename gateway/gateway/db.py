@@ -55,6 +55,10 @@ class User(Base):
     policy_role_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("policy_roles.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # GitHub user ID for accounts linked via GitHub SSO. Stored as string
+    # since GitHub returns numeric ids that fit easily but we keep room
+    # for other SSO providers later.
+    github_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -222,6 +226,13 @@ async def init_db() -> None:
         ))
         await conn.execute(text(
             "ALTER TABLE compute_pods ADD COLUMN IF NOT EXISTS reject_reason VARCHAR(1024)"
+        ))
+        # GitHub SSO: column for linking platform accounts to GitHub user IDs.
+        await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id VARCHAR(64)"
+        ))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_github_id ON users(github_id) WHERE github_id IS NOT NULL"
         ))
 
 

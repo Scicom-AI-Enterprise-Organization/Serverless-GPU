@@ -194,6 +194,8 @@ export const gateway = {
 
   // ---- Admin: users, policy roles, audit ----
   adminListUsers: () => request<AdminUserRecord[]>("/admin/users"),
+  adminGetUser: (id: number) =>
+    request<AdminUserRecord>(`/admin/users/${id}`),
   adminSetUserRole: (id: number, role: "user" | "developer" | "admin") =>
     request<AdminUserRecord>(`/admin/users/${id}/role`, {
       method: "PATCH",

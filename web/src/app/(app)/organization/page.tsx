@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { TOKEN_COOKIE } from "@/lib/auth-cookie";
 import { getMe } from "@/lib/me";
 import { ConsoleTopbar } from "@/components/console/topbar";
-import type { AdminUserRecord, PolicyRole } from "@/lib/types";
+import type { AdminUserRecord } from "@/lib/types";
 import { OrganizationTable } from "./table";
 
 const GATEWAY = process.env.NEXT_PUBLIC_GATEWAY_URL ?? "http://localhost:8080";
@@ -29,10 +29,7 @@ export default async function OrganizationPage() {
 
   const jar = await cookies();
   const token = jar.get(TOKEN_COOKIE)?.value ?? "";
-  const [users, roles] = await Promise.all([
-    loadJson<AdminUserRecord[]>(token, "/admin/users"),
-    loadJson<PolicyRole[]>(token, "/admin/policy-roles"),
-  ]);
+  const users = await loadJson<AdminUserRecord[]>(token, "/admin/users");
 
   return (
     <div className="flex min-h-full flex-col">
@@ -59,11 +56,7 @@ export default async function OrganizationPage() {
               <p className="text-xs text-muted-foreground">All users with access to this gateway.</p>
             </div>
           </div>
-          <OrganizationTable
-            users={users ?? []}
-            policyRoles={roles ?? []}
-            currentUserId={me.user_id}
-          />
+          <OrganizationTable users={users ?? []} />
         </section>
       </div>
     </div>

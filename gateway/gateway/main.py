@@ -170,6 +170,11 @@ class UserRecord(BaseModel):
     policy_role_name: Optional[str] = None
     section_permissions: dict[str, bool] = Field(default_factory=dict)
     created_at: str
+    # "github" if the row was created via SSO, "password" otherwise. Derived
+    # from the github_id column so the frontend can show a small badge on
+    # the profile page without us inventing a separate column.
+    auth_provider: str = "password"
+    github_id: Optional[str] = None
 
 
 class SetRoleRequest(BaseModel):
@@ -215,6 +220,16 @@ class AuditLogRecord(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
+
+
+class GithubUpsertRequest(BaseModel):
+    """Used by the web layer's GitHub OAuth callback. The web has just
+    completed the OAuth code exchange and verified the user; we trust it
+    (auth via INTERNAL_AUTH_TOKEN header) to mint a session for that user."""
+    github_id: str = Field(min_length=1, max_length=64)
+    login: str = Field(min_length=1, max_length=64)  # GitHub username
+    email: Optional[str] = Field(default=None, max_length=255)
+    name: Optional[str] = Field(default=None, max_length=128)
 
 
 def _to_app_record(app: App) -> AppRecord:
@@ -432,6 +447,64 @@ async def change_password(
     return {"ok": True}
 
 
+@app.post("/auth/github/upsert", response_model=TokenResponse)
+async def github_upsert(
+    req: GithubUpsertRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Mint a session for a GitHub user. Looks up by github_id first, then
+    by email; creates the row if neither matches. Called server-to-server
+    by the web's OAuth callback — gated by a shared INTERNAL_AUTH_TOKEN
+    so the public can't bypass password auth by hitting this directly."""
+    expected = os.environ.get("INTERNAL_AUTH_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "INTERNAL_AUTH_TOKEN not configured on gateway"},
+        )
+    presented = request.headers.get("x-internal-token", "").strip()
+    if not secrets.compare_digest(presented, expected):
+        raise HTTPException(status_code=401, detail={"error": "internal auth failed"})
+
+    from sqlalchemy import select as _select
+    user: Optional[User] = None
+    # Match by github_id (stable) first.
+    res = await session.execute(_select(User).where(User.github_id == req.github_id))
+    user = res.scalar_one_or_none()
+    if user is None and req.email:
+        # Fallback: link an existing local account that registered with the
+        # same email. Updates the row's github_id so future logins go through
+        # the fast path above.
+        res = await session.execute(_select(User).where(User.email == req.email.lower()))
+        user = res.scalar_one_or_none()
+        if user is not None:
+            user.github_id = req.github_id
+    if user is None:
+        # First-time sign-in via GitHub. Create the row with a random,
+        # unusable password hash — they can't password-login this account
+        # (and shouldn't need to, since they SSO).
+        username = req.login
+        # If GitHub login collides with an existing local username, append
+        # a short suffix so we don't 409 on the unique index.
+        existing = await get_user_by_username(session, username)
+        if existing is not None:
+            username = f"{req.login}-{secrets.token_hex(3)}"
+        user = User(
+            username=username,
+            email=(req.email.lower() if req.email else None),
+            password_hash=hash_password(secrets.token_urlsafe(32)),
+            github_id=req.github_id,
+            role="user",  # admins promote manually via /admin/users
+        )
+        session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    token = await create_session(request.app.state.redis, user.id)
+    logger.info("github sso: user=%s id=%d gh=%s", user.username, user.id, req.github_id)
+    return TokenResponse(token=token, username=user.username)
+
+
 @app.post("/auth/logout")
 async def logout(request: Request, user: User = Depends(current_user)):
     header = request.headers.get("authorization", "")
@@ -455,6 +528,8 @@ async def _user_to_record(u: User, session: AsyncSession) -> UserRecord:
         policy_role_name=role_obj.name if role_obj else None,
         section_permissions=sections,
         created_at=u.created_at.isoformat() if u.created_at else "",
+        auth_provider="github" if u.github_id else "password",
+        github_id=u.github_id,
     )
 
 
@@ -488,6 +563,18 @@ async def list_users(
     for u in result.scalars().all():
         out.append(await _user_to_record(u, session))
     return out
+
+
+@app.get("/admin/users/{user_id}", response_model=UserRecord)
+async def get_user(
+    user_id: int,
+    _: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    target = await session.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    return await _user_to_record(target, session)
 
 
 @app.delete("/admin/users/{user_id}")
