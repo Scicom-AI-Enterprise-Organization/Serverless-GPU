@@ -388,7 +388,7 @@ function WorkerLogs({ machineId }: { machineId: string }) {
       ) : source === "gateway" ? (
         <div
           ref={(el) => { scrollRef.current = el; }}
-          className="max-h-72 overflow-auto rounded-md border border-border bg-background/60 p-2 text-xs scrollbar-thin"
+          className="terminal-block max-h-72 overflow-auto rounded-md border border-border bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200 scrollbar-thin"
         >
           {events.map((e, i) => (
             <EventRow key={i} event={e} />
@@ -397,7 +397,7 @@ function WorkerLogs({ machineId }: { machineId: string }) {
       ) : (
         <pre
           ref={(el) => { scrollRef.current = el; }}
-          className="max-h-72 overflow-auto rounded-md border border-border bg-background/60 p-3 font-mono text-[11px] leading-relaxed scrollbar-thin"
+          className="terminal-block max-h-72 overflow-auto rounded-md border border-border bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200 scrollbar-thin"
         >
           {lines.map((l, i) => (
             <div key={i}>{l}</div>
