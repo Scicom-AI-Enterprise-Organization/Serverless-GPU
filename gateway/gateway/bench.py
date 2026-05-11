@@ -16,6 +16,7 @@ import glob
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import time
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 import boto3
+import httpx
 import yaml
 from botocore.client import Config as BotoConfig
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -32,6 +34,7 @@ from pydantic import BaseModel
 from sqlalchemy import (
     JSON,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -81,6 +84,11 @@ class Benchmark(Base):
     )
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # RunPod $/hour quote at spawn time, captured by scraping the pod_id out of
+    # benchmaq stdout then querying RunPod /pods/{id}. NULL while the pod isn't
+    # up yet, and stays at the original quoted rate for the life of the run.
+    cost_per_hr: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    runpod_pod_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
 
 # ---------- S3 ----------------------------------------------------------
@@ -248,6 +256,56 @@ async def _push_log(redis, bench_id: str, line: str) -> None:
         pass
 
 
+# benchmaq prints `Pod created: <runpod-id>` exactly once when the pod comes
+# up. We use that to capture the RunPod $/hour rate so the UI can display
+# a live cost ticker. Captured once per bench (set keeps us idempotent).
+_POD_CREATED_RE = re.compile(r"Pod created:\s*(\S+)")
+_COST_CAPTURED: set[str] = set()
+
+
+async def _fetch_runpod_cost(pod_id: str) -> Optional[float]:
+    """Return RunPod's costPerHr for a pod by id, or None if anything goes
+    sideways (no API key, pod not found, transient network error). Best-effort
+    — never raises."""
+    api_key = os.environ.get("RUNPOD_API_KEY", "").strip()
+    if not api_key:
+        return None
+    base = os.environ.get("RUNPOD_API_BASE", "https://rest.runpod.io/v1")
+    try:
+        async with httpx.AsyncClient(
+            base_url=base,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15.0,
+        ) as cli:
+            r = await cli.get(f"/pods/{pod_id}")
+            if r.status_code >= 400:
+                return None
+            data = r.json()
+            cost = data.get("costPerHr") or data.get("cost_per_hr")
+            return float(cost) if cost is not None else None
+    except Exception:
+        return None
+
+
+async def _capture_runpod_cost(bench_id: str, pod_id: str) -> None:
+    """Look up the hourly rate for the pod benchmaq just spawned and store it
+    on the row. Logged but otherwise best-effort — a cost-tracking failure must
+    never break the run."""
+    cost = await _fetch_runpod_cost(pod_id)
+    try:
+        async with session_factory()() as s:
+            row = await s.get(Benchmark, bench_id)
+            if row is None:
+                return
+            row.runpod_pod_id = pod_id
+            row.cost_per_hr = cost
+            await s.commit()
+    except Exception:
+        logger.warning("bench %s: failed to persist cost for pod %s", bench_id, pod_id)
+        return
+    logger.info("bench %s: pod=%s cost=%s/hr", bench_id, pod_id, cost)
+
+
 async def _drain(stream: asyncio.StreamReader, prefix: str, redis, bench_id: str) -> None:
     """Read lines from a subprocess pipe and fan them out to redis + python log."""
     while True:
@@ -256,6 +314,13 @@ async def _drain(stream: asyncio.StreamReader, prefix: str, redis, bench_id: str
             return
         text = line.decode("utf-8", "replace").rstrip()
         await _push_log(redis, bench_id, f"{prefix}{text}")
+        # First-seen `Pod created: <id>` → kick off a cost lookup. Only watch
+        # stdout (prefix == "") since stderr can echo unrelated text.
+        if not prefix and bench_id not in _COST_CAPTURED:
+            m = _POD_CREATED_RE.search(text)
+            if m:
+                _COST_CAPTURED.add(bench_id)
+                asyncio.create_task(_capture_runpod_cost(bench_id, m.group(1)))
 
 
 async def run_benchmark(redis, bench_id: str, raw_yaml: str) -> None:
@@ -479,6 +544,7 @@ class BenchmarkRecord(BaseModel):
     created_at: str
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
+    cost_per_hr: Optional[float] = None
 
 
 class FileRecord(BaseModel):
@@ -520,6 +586,7 @@ def _to_record(b: Benchmark, owner_username: str) -> BenchmarkRecord:
         created_at=b.created_at.isoformat() if b.created_at else "",
         started_at=b.started_at.isoformat() if b.started_at else None,
         ended_at=b.ended_at.isoformat() if b.ended_at else None,
+        cost_per_hr=b.cost_per_hr,
     )
 
 

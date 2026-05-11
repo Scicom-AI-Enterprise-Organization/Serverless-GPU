@@ -911,13 +911,14 @@ async def create_app(
         if req.enable_metrics:
             env.update(build_metrics_env(req.name, provider.name))
         try:
-            machine_id = await provider.provision(
+            result = await provider.provision(
                 app_id=req.name,
                 model=req.model,
                 gpu=req.gpu,
                 env=env,
                 gpu_count=req.gpu_count,
             )
+            machine_id = result.machine_id
         except Exception as e:
             error_msg = (str(e) or repr(e))[:500]
             logger.warning(
@@ -955,9 +956,16 @@ async def create_app(
             }),
             ex=REGISTRATION_TOKEN_TTL_S,
         )
+        if result.cost_per_hr is not None:
+            await rdb.set(
+                f"worker_cost:{machine_id}",
+                str(result.cost_per_hr),
+                ex=REGISTRATION_TOKEN_TTL_S,
+            )
         await emit_worker_event(
             rdb, machine_id, req.name, "info",
-            f"provisioned on {provider.name} (gpu={req.gpu}x{req.gpu_count}, pre-flight at create)",
+            f"provisioned on {provider.name} (gpu={req.gpu}x{req.gpu_count}, pre-flight at create"
+            + (f", ${result.cost_per_hr:.4f}/hr)" if result.cost_per_hr is not None else ")"),
         )
         await rdb.delete(f"app:{req.name}:provision_cooldown_until")
         logger.info("create_app pre-flight provisioned %s for %s", machine_id, req.name)

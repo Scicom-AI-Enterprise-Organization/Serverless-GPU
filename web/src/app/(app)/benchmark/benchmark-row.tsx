@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import yaml from "js-yaml";
-import { Clock, Cpu, Layers, TrendingUp, User } from "lucide-react";
+import { Clock, Cpu, DollarSign, Layers, TrendingUp, User } from "lucide-react";
 import type { BenchmarkRecord } from "@/lib/types";
 import { avatarFor } from "@/lib/avatar";
+import { formatCostUSD, useLiveCost } from "@/lib/cost";
 import { cn } from "@/lib/utils";
 
 // Status pill is the only place this row uses colour. Pattern matches Compute:
@@ -165,6 +166,7 @@ export function BenchmarkRow({ bench }: { bench: BenchmarkRecord }) {
               {fmtDuration(dur)}
             </span>
           )}
+          <CostCell bench={bench} />
           {bench.exit_code != null && bench.exit_code !== 0 && (
             <span className="font-mono text-destructive">exit {bench.exit_code}</span>
           )}
@@ -174,5 +176,16 @@ export function BenchmarkRow({ bench }: { bench: BenchmarkRecord }) {
         </span>
       </div>
     </Link>
+  );
+}
+
+function CostCell({ bench }: { bench: BenchmarkRecord }) {
+  const live = useLiveCost(bench.started_at, bench.ended_at, bench.cost_per_hr);
+  if (live == null) return null;
+  return (
+    <span className="inline-flex items-center gap-1 tabular-nums">
+      <DollarSign className="h-3 w-3" />
+      {formatCostUSD(live)}
+    </span>
   );
 }

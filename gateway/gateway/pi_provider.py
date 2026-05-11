@@ -38,7 +38,7 @@ from typing import Any, Optional
 
 import httpx
 
-from .provider import GpuAvailability, Provider
+from .provider import GpuAvailability, Provider, ProvisionResult
 
 logger = logging.getLogger("gateway.pi_provider")
 
@@ -136,7 +136,7 @@ class PrimeIntellectProvider(Provider):
         gpu: str,
         env: dict[str, str],
         gpu_count: int = 1,
-    ) -> str:
+    ) -> ProvisionResult:
         import uuid as _uuid
 
         machine_id = f"m-pi-{_uuid.uuid4().hex[:8]}"
@@ -182,11 +182,21 @@ class PrimeIntellectProvider(Provider):
             raise RuntimeError(f"PI provision response missing id: {data}")
 
         self._pod_ids[machine_id] = pod_id
+
+        # PI quotes per-token, not per-hour, so an hourly rate isn't really
+        # meaningful for billing — but if the response happens to include one
+        # (e.g. priceHr), surface it for the UI as a best-effort signal.
+        cost_raw = data.get("priceHr") or data.get("price_hr") or data.get("costPerHr")
+        try:
+            cost_per_hr = float(cost_raw) if cost_raw is not None else None
+        except (TypeError, ValueError):
+            cost_per_hr = None
+
         logger.info(
-            "pi-provision: app=%s gpu=%s → machine=%s pod=%s name=%s",
-            app_id, gpu, machine_id, pod_id, pod_name,
+            "pi-provision: app=%s gpu=%s → machine=%s pod=%s name=%s cost=%s/hr",
+            app_id, gpu, machine_id, pod_id, pod_name, cost_per_hr,
         )
-        return machine_id
+        return ProvisionResult(machine_id=machine_id, cost_per_hr=cost_per_hr)
 
     async def terminate(self, machine_id: str) -> None:
         pod_id = self._pod_ids.pop(machine_id, None)

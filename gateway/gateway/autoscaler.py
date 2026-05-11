@@ -180,17 +180,19 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
             if bool(getattr(app, "enable_metrics", True)):
                 env.update(build_metrics_env(app_id, provider.name))
             try:
-                machine_id = await provider.provision(
+                result = await provider.provision(
                     app_id=app_id,
                     model=app.model,
                     gpu=app.gpu,
                     env=env,
                     gpu_count=int(getattr(app, "gpu_count", 1) or 1),
                 )
+                machine_id = result.machine_id
                 _metrics.PROVISION_TOTAL.labels(provider=provider.name, ok="true").inc()
                 await emit_worker_event(
                     rdb, machine_id, app_id, "info",
-                    f"provisioned on {provider.name} (gpu={app.gpu}x{int(getattr(app, 'gpu_count', 1) or 1)})",
+                    f"provisioned on {provider.name} (gpu={app.gpu}x{int(getattr(app, 'gpu_count', 1) or 1)}"
+                    + (f", ${result.cost_per_hr:.4f}/hr)" if result.cost_per_hr is not None else ")"),
                 )
                 # Clear any stale error/cooldown after a successful provision.
                 await rdb.delete(
@@ -240,6 +242,15 @@ async def _reconcile_app(rdb: "redis_async.Redis", provider: "Provider", app: Ap
                 }),
                 ex=REGISTRATION_TOKEN_TTL_S,
             )
+            # Cost lives in a sidecar key because heartbeat/register overwrites
+            # the worker:* blob — we want the original spawn-time quote to stick
+            # for the life of the worker.
+            if result.cost_per_hr is not None:
+                await rdb.set(
+                    f"worker_cost:{machine_id}",
+                    str(result.cost_per_hr),
+                    ex=REGISTRATION_TOKEN_TTL_S,
+                )
             await emit_worker_event(
                 rdb, machine_id, app_id, "info",
                 f"scaled up: +1 worker → {current + 1}/{max_containers}",

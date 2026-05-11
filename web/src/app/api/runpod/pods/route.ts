@@ -47,6 +47,7 @@ export type WorkerRowResponse = {
   ram_gb: number;
   disk_gb: number;
   created_at: string | null;
+  cost_per_hr: number | null;
 };
 
 const apiKey = () => process.env.RUNPOD_API_KEY ?? "";
@@ -158,6 +159,7 @@ function toRow(pod: GqlPod): WorkerRowResponse {
     ram_gb: pod.memoryInGb ?? 0,
     disk_gb: pod.containerDiskInGb ?? 0,
     created_at: pod.createdAt ?? null,
+    cost_per_hr: pod.costPerHr ?? null,
   };
 }
 

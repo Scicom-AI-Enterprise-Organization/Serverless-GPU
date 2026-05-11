@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { gateway } from "@/lib/gateway";
+import { formatCostUSD, formatRateUSD, useLiveCost } from "@/lib/cost";
 import type { BenchmarkRecord } from "@/lib/types";
 import { LogsTab } from "./tabs/logs";
 import { FilesTab } from "./tabs/files";
@@ -123,7 +124,7 @@ export function BenchmarkDetail({ bench: initial }: { bench: BenchmarkRecord }) 
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-5">
           <Kpi label="Status" value={bench.status} />
           <Kpi label="Duration" value={dur != null ? `${dur}s` : "—"} />
           <Kpi label="Exit code" value={bench.exit_code != null ? String(bench.exit_code) : "—"} />
@@ -131,6 +132,7 @@ export function BenchmarkDetail({ bench: initial }: { bench: BenchmarkRecord }) 
             label="Result"
             value={bench.result_json ? "Yes" : "—"}
           />
+          <CostKpi bench={bench} />
         </div>
 
         <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="mt-4">
@@ -182,6 +184,24 @@ function Kpi({ label, value }: { label: string; value: string }) {
     <div>
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-0.5 text-lg font-semibold tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+function CostKpi({ bench }: { bench: BenchmarkRecord }) {
+  const live = useLiveCost(bench.started_at, bench.ended_at, bench.cost_per_hr);
+  const isRunning = bench.status === "running" || bench.status === "queued";
+  return (
+    <div>
+      <div className="text-xs text-muted-foreground">
+        Cost {isRunning && bench.cost_per_hr != null ? "(live)" : ""}
+      </div>
+      <div className="mt-0.5 text-lg font-semibold tabular-nums">
+        {formatCostUSD(live)}
+      </div>
+      <div className="text-[10px] text-muted-foreground">
+        {bench.cost_per_hr != null ? `at ${formatRateUSD(bench.cost_per_hr)}` : "—"}
+      </div>
     </div>
   );
 }

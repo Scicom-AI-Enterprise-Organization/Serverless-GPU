@@ -37,6 +37,15 @@ class GpuAvailability:
     checked_at: float = field(default_factory=lambda: time.time())
 
 
+@dataclass
+class ProvisionResult:
+    """What a provider returns when it spawns a worker. `cost_per_hr` is the
+    hourly rate quoted by the provider at spawn time (USD); None for providers
+    that don't quote hourly prices (PI's per-token model, FakeProvider)."""
+    machine_id: str
+    cost_per_hr: Optional[float] = None
+
+
 class Provider(ABC):
     name: str = "abstract"
 
@@ -48,8 +57,10 @@ class Provider(ABC):
         gpu: str,
         env: dict[str, str],
         gpu_count: int = 1,
-    ) -> str:
-        """Spawn a worker for `app_id`. Returns a machine_id.
+    ) -> ProvisionResult:
+        """Spawn a worker for `app_id`. Returns a ProvisionResult with the
+        machine_id plus the hourly cost the provider quoted at spawn time
+        (None for providers without hourly pricing).
 
         The worker registers itself back to the gateway asynchronously — this
         method does NOT wait for the worker to be ready.
@@ -112,7 +123,7 @@ class FakeProvider(Provider):
         gpu: str,
         env: dict[str, str],
         gpu_count: int = 1,
-    ) -> str:
+    ) -> ProvisionResult:
         machine_id = f"m-fake-{uuid.uuid4().hex[:8]}"
         task = asyncio.create_task(
             self._spawn(machine_id, app_id, model, env),
@@ -120,7 +131,7 @@ class FakeProvider(Provider):
         )
         self._tasks[machine_id] = task
         logger.info("fake-provision: app=%s gpu=%sx%d → %s", app_id, gpu, gpu_count, machine_id)
-        return machine_id
+        return ProvisionResult(machine_id=machine_id, cost_per_hr=None)
 
     async def _spawn(self, machine_id: str, app_id: str, model: str, env: dict[str, str]) -> None:
         # Set env keys the worker reads and call its main loop directly.

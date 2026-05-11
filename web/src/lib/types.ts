@@ -84,6 +84,7 @@ export type BenchmarkRecord = {
   created_at: string;
   started_at?: string | null;
   ended_at?: string | null;
+  cost_per_hr?: number | null;
 };
 
 export type CreateBenchmarkRequest = {

@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { gateway } from "@/lib/gateway";
+import { formatCostUSD, formatRateUSD, useLiveCost } from "@/lib/cost";
 import type { ComputePod, ComputeStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -168,10 +169,8 @@ export function PodDetail({ initial }: { initial: ComputePod }) {
           <Field label="Volume" value={pod.volume_gb > 0 ? `${pod.volume_gb} GB` : "—"} />
           <Field label="Cloud" value={pod.cloud_type.toLowerCase()} />
           <Field label="Template" value={pod.template_id ?? "—"} />
-          <Field
-            label="Cost"
-            value={pod.cost_per_hr != null ? `$${pod.cost_per_hr.toFixed(2)}/hr` : "—"}
-          />
+          <Field label="Rate" value={formatRateUSD(pod.cost_per_hr)} />
+          <LiveCostField pod={pod} />
           <Field label="Image" value={pod.image} className="col-span-full font-mono text-xs" />
         </dl>
       </Card>
@@ -335,6 +334,23 @@ function Field({
         {label}
       </dt>
       <dd className="mt-0.5 break-words text-sm">{value}</dd>
+    </div>
+  );
+}
+
+function LiveCostField({ pod }: { pod: ComputePod }) {
+  // Billing starts when ready_at is set (pod actually came up) and freezes
+  // at terminated_at. Anything before ready_at isn't charged.
+  const live = useLiveCost(pod.ready_at, pod.terminated_at, pod.cost_per_hr);
+  const isLive = pod.ready_at != null && pod.terminated_at == null;
+  return (
+    <div>
+      <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        Cost {isLive ? "(live)" : ""}
+      </dt>
+      <dd className="mt-0.5 break-words text-sm tabular-nums">
+        {formatCostUSD(live)}
+      </dd>
     </div>
   );
 }

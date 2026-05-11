@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import yaml from "js-yaml";
 import { Search, X } from "lucide-react";
 import type { BenchmarkRecord } from "@/lib/types";
+import { formatRateUSD } from "@/lib/cost";
 import { BenchmarkRow } from "./benchmark-row";
 
 /** Pre-compute a flat searchable string per benchmark. Includes name, id,
@@ -41,6 +42,18 @@ export function BenchmarkList({ items }: { items: BenchmarkRecord[] }) {
 
   const haystacks = useMemo(
     () => items.map((b) => ({ bench: b, text: searchableText(b) })),
+    [items],
+  );
+
+  // Sum hourly rate across benches with a live RunPod pod still attached.
+  // Status "running" plus a non-null cost_per_hr means we got the rate back
+  // from RunPod and the pod hasn't been torn down yet.
+  const burnRate = useMemo(
+    () =>
+      items.reduce((sum, b) => {
+        if (b.status !== "running" || b.cost_per_hr == null) return sum;
+        return sum + b.cost_per_hr;
+      }, 0),
     [items],
   );
 
@@ -82,6 +95,15 @@ export function BenchmarkList({ items }: { items: BenchmarkRecord[] }) {
         <div className="mb-3 text-xs text-muted-foreground">
           {filtered.length} of {items.length} match{filtered.length === 1 ? "es" : "es"} for{" "}
           <span className="font-mono text-foreground">&quot;{q}&quot;</span>
+        </div>
+      )}
+
+      {burnRate > 0 && (
+        <div className="mb-3 inline-flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs">
+          <span className="text-amber-700 dark:text-amber-400">Burning now</span>
+          <span className="font-mono font-semibold tabular-nums text-foreground">
+            {formatRateUSD(burnRate)}
+          </span>
         </div>
       )}
 

@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 import httpx
 
-from .provider import GpuAvailability, Provider
+from .provider import GpuAvailability, Provider, ProvisionResult
 
 logger = logging.getLogger("gateway.runpod_provider")
 
@@ -182,7 +182,7 @@ class RunPodProvider(Provider):
         gpu: str,
         env: dict[str, str],
         gpu_count: int = 1,
-    ) -> str:
+    ) -> "ProvisionResult":
         machine_id = f"m-rp-{uuid.uuid4().hex[:8]}"
         pod_name = f"{self.name_prefix}-{app_id}-{machine_id}"
 
@@ -223,11 +223,21 @@ class RunPodProvider(Provider):
             raise RuntimeError(f"RunPod provision response missing id: {data}")
 
         self._pod_ids[machine_id] = pod_id
+
+        # RunPod's pod-create response carries the hourly rate it locked in
+        # for this pod. Capture it best-effort so the UI can show a live cost
+        # ticker; a missing/invalid value just leaves it None.
+        cost_raw = data.get("costPerHr") or data.get("cost_per_hr")
+        try:
+            cost_per_hr = float(cost_raw) if cost_raw is not None else None
+        except (TypeError, ValueError):
+            cost_per_hr = None
+
         logger.info(
-            "runpod-provision: app=%s gpu=%s → machine=%s pod=%s name=%s",
-            app_id, gpu, machine_id, pod_id, pod_name,
+            "runpod-provision: app=%s gpu=%s → machine=%s pod=%s name=%s cost=%s/hr",
+            app_id, gpu, machine_id, pod_id, pod_name, cost_per_hr,
         )
-        return machine_id
+        return ProvisionResult(machine_id=machine_id, cost_per_hr=cost_per_hr)
 
     async def terminate(self, machine_id: str) -> None:
         pod_id = self._pod_ids.pop(machine_id, None)

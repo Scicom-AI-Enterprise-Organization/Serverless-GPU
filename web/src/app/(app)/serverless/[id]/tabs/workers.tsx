@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { formatCostUSD, formatRateUSD, useLiveCost } from "@/lib/cost";
 import type { AppRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -22,6 +23,7 @@ type WorkerRow = {
   ram_gb: number;
   disk_gb: number;
   created_at: string | null;
+  cost_per_hr: number | null;
 };
 
 type ApiResponse = { workers: WorkerRow[]; prefix: string; error?: string };
@@ -125,6 +127,10 @@ export function WorkersTab({ app }: { app: AppRecord }) {
 
   const liveCount = live === null ? "—" : live.length;
   const terminatedCount = rows.filter((r) => r.status === "terminated").length;
+  const burnRate = (live ?? []).reduce((sum, w) => {
+    if (w.status !== "running" && w.status !== "initializing") return sum;
+    return sum + (w.cost_per_hr ?? 0);
+  }, 0);
 
   return (
     <Card className="overflow-hidden">
@@ -137,6 +143,14 @@ export function WorkersTab({ app }: { app: AppRecord }) {
             <span className="font-mono text-foreground">{terminatedCount}</span> remembered terminated
           </span>
           <span className="text-muted-foreground">max {app.autoscaler.max_containers}</span>
+          {burnRate > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px]">
+              <span className="text-amber-700 dark:text-amber-400">burning</span>
+              <span className="font-mono font-semibold tabular-nums text-foreground">
+                {formatRateUSD(burnRate)}
+              </span>
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {terminatedCount > 0 && (
@@ -170,6 +184,7 @@ export function WorkersTab({ app }: { app: AppRecord }) {
               <th className="px-4 py-2 font-medium">GPU</th>
               <th className="px-4 py-2 font-medium">vCPUs</th>
               <th className="px-4 py-2 font-medium">RAM</th>
+              <th className="px-4 py-2 font-medium">Cost</th>
               <th className="px-4 py-2 font-medium">Created</th>
             </tr>
           </thead>
@@ -179,7 +194,7 @@ export function WorkersTab({ app }: { app: AppRecord }) {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                <td colSpan={9} className="px-4 py-12 text-center text-sm text-muted-foreground">
                   {loading ? "Loading workers from RunPod…" : "No workers — fire a request to trigger the autoscaler."}
                 </td>
               </tr>
@@ -230,18 +245,36 @@ function WorkerRow({ w }: { w: WorkerRow }) {
         <td className="px-4 py-3 font-mono text-xs">{w.gpu}{w.gpu_count > 1 ? ` × ${w.gpu_count}` : ""}</td>
         <td className="px-4 py-3 font-mono text-xs">{w.vcpus || "—"}</td>
         <td className="px-4 py-3 font-mono text-xs">{w.ram_gb ? `${w.ram_gb} GB` : "—"}</td>
+        <WorkerCostCell w={w} />
         <td className="px-4 py-3 text-xs text-muted-foreground">
           {w.created_at ? new Date(w.created_at).toLocaleString() : "—"}
         </td>
       </tr>
       {open && (
         <tr className="border-b border-border/60 bg-muted/20">
-          <td colSpan={8} className="px-4 py-3">
+          <td colSpan={9} className="px-4 py-3">
             <WorkerLogs machineId={w.machine_id} />
           </td>
         </tr>
       )}
     </>
+  );
+}
+
+function WorkerCostCell({ w }: { w: WorkerRow }) {
+  // Only running/initializing workers get a live ticker — RunPod doesn't
+  // surface a reliable terminated_at through this proxy, so the moment a
+  // worker leaves the live set we lose the ability to compute total cost
+  // honestly. Show "—" instead of a misleading frozen value.
+  const isLive = w.status === "running" || w.status === "initializing";
+  const live = useLiveCost(isLive ? w.created_at : null, null, w.cost_per_hr);
+  if (live == null) {
+    return <td className="px-4 py-3 text-xs text-muted-foreground">—</td>;
+  }
+  return (
+    <td className="px-4 py-3 font-mono text-xs tabular-nums">
+      {formatCostUSD(live)}
+    </td>
   );
 }
 

@@ -234,6 +234,14 @@ async def init_db() -> None:
         await conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_github_id ON users(github_id) WHERE github_id IS NOT NULL"
         ))
+        # Benchmark cost tracking: captured at spawn by scraping benchmaq's
+        # `Pod created: <id>` line and querying RunPod /pods/{id} for costPerHr.
+        await conn.execute(text(
+            "ALTER TABLE benchmarks ADD COLUMN IF NOT EXISTS cost_per_hr DOUBLE PRECISION"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE benchmarks ADD COLUMN IF NOT EXISTS runpod_pod_id VARCHAR(64)"
+        ))
 
 
 async def seed_admin_user() -> None:
