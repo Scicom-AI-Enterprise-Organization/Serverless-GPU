@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import yaml from "js-yaml";
 import {
   Bookmark,
   Box,
@@ -301,6 +302,177 @@ ${renderBenchEntries(s)}
 `;
 }
 
+// Serve keys that map 1:1 to a Form field. Everything else under
+// benchmark[0].serve is flattened back into Extra args (raw cmdline form).
+const FORM_SERVE_KEYS = new Set([
+  "tensor_parallel_size",
+  "data_parallel_size",
+  "max_model_len",
+  "gpu_memory_utilization",
+  "max_num_seqs",
+  "dtype",
+]);
+const FORM_DTYPES = new Set<FormState["dtype"]>([
+  "auto",
+  "bfloat16",
+  "float16",
+  "float32",
+]);
+
+type ParseYamlResult = {
+  state: FormState;
+  unknownKeys: string[];
+  parseError: string | null;
+};
+
+/** Parse a benchmaq YAML config back into FormState. Anything the form
+ * doesn't represent (extra env vars, multiple bench items, custom engine,
+ * etc.) is collected into `unknownKeys` so we can warn the user that
+ * round-tripping through Form mode will drop those keys. */
+function parseYamlToForm(src: string, fallback: FormState): ParseYamlResult {
+  let doc: unknown;
+  try {
+    doc = yaml.load(src);
+  } catch (e) {
+    return {
+      state: fallback,
+      unknownKeys: [],
+      parseError: e instanceof Error ? e.message : String(e),
+    };
+  }
+  if (!doc || typeof doc !== "object") {
+    return { state: fallback, unknownKeys: [], parseError: "empty config" };
+  }
+  const d = doc as Record<string, unknown>;
+  const next = { ...fallback };
+  const unknown: string[] = [];
+
+  // ---- runpod.pod
+  const pod = ((d.runpod as Record<string, unknown> | undefined)?.pod ??
+    {}) as Record<string, unknown>;
+  if (typeof pod.gpu_type === "string") next.gpu_type = pod.gpu_type;
+  if (typeof pod.gpu_count === "number") next.gpu_count = pod.gpu_count;
+  if (typeof pod.secure_cloud === "boolean")
+    next.secure_cloud = pod.secure_cloud;
+
+  // ---- runpod.container
+  const container = ((d.runpod as Record<string, unknown> | undefined)
+    ?.container ?? {}) as Record<string, unknown>;
+  if (typeof container.image === "string") next.container_image = container.image;
+  if (typeof container.disk_size === "number") next.disk_size = container.disk_size;
+
+  // ---- runpod.env
+  const env = ((d.runpod as Record<string, unknown> | undefined)?.env ?? {}) as
+    Record<string, unknown>;
+  if (typeof env.HF_HOME === "string") next.hf_home = env.HF_HOME;
+  for (const k of Object.keys(env)) {
+    if (k !== "HF_HOME") unknown.push(`runpod.env.${k}`);
+  }
+
+  // ---- remote.dependencies — pick the vllm pin if present.
+  const deps = ((d.remote as Record<string, unknown> | undefined)
+    ?.dependencies ?? []) as unknown[];
+  if (Array.isArray(deps)) {
+    for (const dep of deps) {
+      if (typeof dep === "string") {
+        const m = dep.match(/^vllm==(.+)$/);
+        if (m) {
+          next.vllm_version = m[1];
+          break;
+        }
+      }
+    }
+  }
+
+  // ---- benchmark[]
+  const benches = Array.isArray(d.benchmark) ? (d.benchmark as unknown[]) : [];
+  if (benches.length > 1) {
+    unknown.push(
+      `benchmark[1..${benches.length - 1}] (Form mode only edits benchmark[0])`,
+    );
+  }
+  const first = (benches[0] ?? {}) as Record<string, unknown>;
+
+  if (typeof first.name === "string") next.benchName = first.name;
+  if (typeof first.engine === "string" && first.engine !== "vllm") {
+    unknown.push(`benchmark[0].engine = ${first.engine} (Form mode assumes vllm)`);
+  }
+  const model = (first.model ?? {}) as Record<string, unknown>;
+  if (typeof model.repo_id === "string") next.model_repo_id = model.repo_id;
+
+  // ---- benchmark[0].serve — split into form-mapped keys + Extra args.
+  const serve = (first.serve ?? {}) as Record<string, unknown>;
+  const extras: string[] = [];
+  for (const [k, v] of Object.entries(serve)) {
+    if (!FORM_SERVE_KEYS.has(k)) {
+      // Re-render as a cmdline flag.
+      const flag = `--${k.replace(/_/g, "-")}`;
+      if (v === true) extras.push(flag);
+      else if (v === false) {
+        // false-valued booleans don't have a clean cmdline form; surface
+        // it as an unknown key rather than silently dropping it.
+        unknown.push(`benchmark[0].serve.${k} = false`);
+      } else if (typeof v === "number" || typeof v === "string") {
+        extras.push(`${flag} ${v}`);
+      } else {
+        unknown.push(`benchmark[0].serve.${k}`);
+      }
+      continue;
+    }
+    if (k === "dtype" && typeof v === "string" && FORM_DTYPES.has(v as FormState["dtype"])) {
+      next.dtype = v as FormState["dtype"];
+    } else if (typeof v === "number") {
+      // The form stores numeric serve args as strings so empty = "use vLLM default".
+      (next as unknown as Record<string, string>)[k] = String(v);
+    }
+  }
+  next.extra_args_raw = extras.join(" ");
+
+  // ---- benchmark[0].bench[] — sweep detection + workload fields.
+  const benchRows = Array.isArray(first.bench)
+    ? (first.bench as Record<string, unknown>[])
+    : [];
+  if (benchRows.length > 0) {
+    const inputLens = new Set<number>();
+    const concs = new Set<number>();
+    let outLen: number | undefined;
+    let nPrompts: number | undefined;
+    let rate: string | undefined;
+    for (const row of benchRows) {
+      if (typeof row.random_input_len === "number") inputLens.add(row.random_input_len);
+      if (typeof row.max_concurrency === "number") concs.add(row.max_concurrency);
+      if (typeof row.random_output_len === "number" && outLen === undefined)
+        outLen = row.random_output_len;
+      if (typeof row.num_prompts === "number" && nPrompts === undefined)
+        nPrompts = row.num_prompts;
+      if (row.request_rate !== undefined && rate === undefined)
+        rate = String(row.request_rate);
+    }
+    if (outLen !== undefined) next.output_len = outLen;
+    if (nPrompts !== undefined) next.num_prompts = nPrompts;
+    if (rate !== undefined) next.request_rate = rate;
+
+    const isSweep =
+      benchRows.length > 1 || inputLens.size > 1 || concs.size > 1;
+    next.sweep_mode = isSweep;
+    if (isSweep) {
+      next.input_lens_csv = [...inputLens]
+        .sort((a, b) => a - b)
+        .join(", ");
+      next.concurrencies_csv = [...concs]
+        .sort((a, b) => a - b)
+        .join(", ");
+    } else {
+      const inLen = [...inputLens][0];
+      const c = [...concs][0];
+      if (typeof inLen === "number") next.input_len = inLen;
+      if (typeof c === "number") next.max_concurrency = c;
+    }
+  }
+
+  return { state: next, unknownKeys: unknown, parseError: null };
+}
+
 export function BenchmarkForm({
   initialName,
   initialYaml,
@@ -310,9 +482,8 @@ export function BenchmarkForm({
 } = {}) {
   const router = useRouter();
   // Duplicate flow: start in YAML mode with the source config pre-filled so
-  // the round-trip is exact (no lossy form parsing). User can still flip
-  // back to Form mode, with the usual caveat that switching resets to
-  // form defaults.
+  // the round-trip is exact. Switching back to Form mode parses the YAML
+  // and back-fills the form (lossy for keys the form doesn't represent).
   const [mode, setMode] = useState<"form" | "yaml">(initialYaml ? "yaml" : "form");
   const [submitting, setSubmitting] = useState(false);
 
@@ -512,7 +683,31 @@ export function BenchmarkForm({
       </Card>
 
       {/* Form / YAML toggle */}
-      <Tabs value={mode} onValueChange={(v) => setMode(v as "form" | "yaml")}>
+      <Tabs
+        value={mode}
+        onValueChange={(v) => {
+          const next = v as "form" | "yaml";
+          if (next === "form" && mode === "yaml") {
+            // Parse the YAML buffer back into the form so edits made in YAML
+            // mode aren't lost when flipping back.
+            const parsed = parseYamlToForm(yamlBuf, form);
+            if (parsed.parseError) {
+              toast.error(`Can't parse YAML: ${parsed.parseError}`);
+              return;
+            }
+            setForm(parsed.state);
+            setName(parsed.state.benchName);
+            if (parsed.unknownKeys.length > 0) {
+              toast.warning(
+                `Form mode can't represent: ${parsed.unknownKeys.join(", ")}. ` +
+                  `These will be dropped if you submit from Form.`,
+                { duration: 8000 },
+              );
+            }
+          }
+          setMode(next);
+        }}
+      >
         <div className="flex items-center justify-between">
           <TabsList>
             <TabsTrigger value="form">
@@ -527,7 +722,7 @@ export function BenchmarkForm({
           <span className="text-xs text-muted-foreground">
             {mode === "form"
               ? "Most common knobs + sweeps. YAML for multi-engine configs or per-row overrides."
-              : "Edit raw config. Switching back to Form discards YAML edits."}
+              : "Edit raw config. Switching back to Form re-parses your edits (keys the form can't represent will be dropped)."}
           </span>
         </div>
 
