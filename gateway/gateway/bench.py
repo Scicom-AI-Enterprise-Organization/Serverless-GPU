@@ -944,9 +944,16 @@ async def delete_benchmark(
         except Exception:
             pass
     bench_name = b.name
+    # Snapshot billing inputs before the row is gone. If the user deletes a
+    # bench that's still running, ended_at will be None and the audit helper
+    # treats "now" as the end — giving us a "spent so far at deletion" total.
+    cost = audit.cost_breakdown(b.started_at, b.ended_at, b.cost_per_hr)
     await session.delete(b)
     await session.commit()
-    await audit.record(user, "benchmark.delete", "benchmark", bench_id, bench_name)
+    await audit.record(
+        user, "benchmark.delete", "benchmark", bench_id, bench_name,
+        details=cost,
+    )
     return {"ok": True, "id": bench_id}
 
 

@@ -16,6 +16,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { gateway } from "@/lib/gateway";
 import { formatCostUSD, formatRateUSD, useLiveCost } from "@/lib/cost";
+import { BurnFlame } from "@/components/burn-flame";
+import { cn } from "@/lib/utils";
 import type { BenchmarkRecord } from "@/lib/types";
 import { LogsTab } from "./tabs/logs";
 import { FilesTab } from "./tabs/files";
@@ -190,13 +192,20 @@ function Kpi({ label, value }: { label: string; value: string }) {
 
 function CostKpi({ bench }: { bench: BenchmarkRecord }) {
   const live = useLiveCost(bench.started_at, bench.ended_at, bench.cost_per_hr);
-  const isRunning = bench.status === "running" || bench.status === "queued";
+  const isBurning =
+    bench.status === "running" && bench.cost_per_hr != null && bench.ended_at == null;
   return (
     <div>
       <div className="text-xs text-muted-foreground">
-        Cost {isRunning && bench.cost_per_hr != null ? "(live)" : ""}
+        Cost {isBurning ? "(live)" : ""}
       </div>
-      <div className="mt-0.5 text-lg font-semibold tabular-nums">
+      <div
+        className={cn(
+          "mt-0.5 flex items-center gap-1.5 text-lg font-semibold tabular-nums",
+          isBurning && "text-amber-600 dark:text-amber-400",
+        )}
+      >
+        {isBurning && <BurnFlame size="h-4 w-4" />}
         {formatCostUSD(live)}
       </div>
       <div className="text-[10px] text-muted-foreground">

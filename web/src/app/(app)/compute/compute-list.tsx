@@ -1,28 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, DollarSign } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import type { ComputePod, ComputeStatus } from "@/lib/types";
 import { formatCostUSD, formatRateUSD, useLiveCost } from "@/lib/cost";
+import { BurnFlame } from "@/components/burn-flame";
 import { cn } from "@/lib/utils";
 
 export function ComputeList({ items }: { items: ComputePod[] }) {
-  // Aggregate burn rate across currently-billing pods (status "running" AND
-  // ready_at set, since pre-ready pods aren't being charged yet).
-  const burnRate = items.reduce((sum, p) => {
-    if (p.status !== "running" || p.ready_at == null) return sum;
-    return sum + (p.cost_per_hr ?? 0);
-  }, 0);
   return (
-    <>
-      {burnRate > 0 && (
-        <div className="mb-3 inline-flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs">
-          <span className="text-amber-700 dark:text-amber-400">Burning now</span>
-          <span className="font-mono font-semibold tabular-nums text-foreground">
-            {formatRateUSD(burnRate)}
-          </span>
-        </div>
-      )}
     <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {items.map((p) => (
         <li key={p.id}>
@@ -62,7 +48,6 @@ export function ComputeList({ items }: { items: ComputePod[] }) {
         </li>
       ))}
     </ul>
-    </>
   );
 }
 
@@ -70,10 +55,11 @@ function CostCell({ pod }: { pod: ComputePod }) {
   // Billing starts when the pod is actually up (ready_at) and stops when it's
   // torn down (terminated_at). Anything before ready_at isn't being charged.
   const live = useLiveCost(pod.ready_at, pod.terminated_at, pod.cost_per_hr);
+  const isBurning = pod.ready_at != null && pod.terminated_at == null;
   if (live == null) return null;
   return (
-    <span className="inline-flex items-center gap-0.5 tabular-nums">
-      <DollarSign className="h-3 w-3" />
+    <span className="inline-flex items-center gap-1 tabular-nums">
+      {isBurning ? <BurnFlame /> : <span className="font-mono">$</span>}
       {formatCostUSD(live)}
     </span>
   );

@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import yaml from "js-yaml";
-import { Clock, Cpu, DollarSign, Layers, TrendingUp, User } from "lucide-react";
+import { Clock, Cpu, Layers, TrendingUp, User } from "lucide-react";
 import type { BenchmarkRecord } from "@/lib/types";
 import { avatarFor } from "@/lib/avatar";
 import { formatCostUSD, useLiveCost } from "@/lib/cost";
+import { BurnFlame } from "@/components/burn-flame";
 import { cn } from "@/lib/utils";
 
 // Status pill is the only place this row uses colour. Pattern matches Compute:
@@ -181,10 +182,16 @@ export function BenchmarkRow({ bench }: { bench: BenchmarkRecord }) {
 
 function CostCell({ bench }: { bench: BenchmarkRecord }) {
   const live = useLiveCost(bench.started_at, bench.ended_at, bench.cost_per_hr);
+  const isBurning = bench.status === "running" && bench.ended_at == null;
   if (live == null) return null;
   return (
-    <span className="inline-flex items-center gap-1 tabular-nums">
-      <DollarSign className="h-3 w-3" />
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 tabular-nums",
+        isBurning && "text-amber-600 dark:text-amber-400",
+      )}
+    >
+      {isBurning ? <BurnFlame /> : <span className="font-mono">$</span>}
       {formatCostUSD(live)}
     </span>
   );

@@ -9,11 +9,37 @@ to the python logger so they're visible in `kubectl logs`.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .db import AuditLog, User, session_factory
 
 logger = logging.getLogger("gateway.audit")
+
+
+def cost_breakdown(
+    started_at: Optional[datetime],
+    ended_at: Optional[datetime],
+    cost_per_hr: Optional[float],
+) -> Optional[dict[str, Any]]:
+    """Compute the final accumulated cost for a resource being torn down.
+
+    Returns a dict suitable for inclusion in the audit `details` blob, or
+    None if we don't have enough info (no start time, no rate, etc.). When
+    `ended_at` is missing we treat the resource as still running and bill
+    to now — gives the audit log a useful "spent so far" snapshot at the
+    moment of deletion.
+    """
+    if started_at is None or cost_per_hr is None:
+        return None
+    end = ended_at or datetime.now(timezone.utc)
+    elapsed_s = max(0.0, (end - started_at).total_seconds())
+    final_cost = (elapsed_s / 3600.0) * cost_per_hr
+    return {
+        "final_cost_usd": round(final_cost, 6),
+        "duration_s": int(elapsed_s),
+        "rate_per_hr": cost_per_hr,
+    }
 
 
 # Canonical action names. Keep these short, dotted, lowercase. The set is

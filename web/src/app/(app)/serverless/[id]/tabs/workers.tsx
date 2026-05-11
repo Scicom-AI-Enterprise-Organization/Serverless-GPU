@@ -4,7 +4,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { formatCostUSD, formatRateUSD, useLiveCost } from "@/lib/cost";
+import { formatCostUSD, useLiveCost } from "@/lib/cost";
+import { BurnFlame } from "@/components/burn-flame";
 import type { AppRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -127,10 +128,6 @@ export function WorkersTab({ app }: { app: AppRecord }) {
 
   const liveCount = live === null ? "—" : live.length;
   const terminatedCount = rows.filter((r) => r.status === "terminated").length;
-  const burnRate = (live ?? []).reduce((sum, w) => {
-    if (w.status !== "running" && w.status !== "initializing") return sum;
-    return sum + (w.cost_per_hr ?? 0);
-  }, 0);
 
   return (
     <Card className="overflow-hidden">
@@ -143,14 +140,6 @@ export function WorkersTab({ app }: { app: AppRecord }) {
             <span className="font-mono text-foreground">{terminatedCount}</span> remembered terminated
           </span>
           <span className="text-muted-foreground">max {app.autoscaler.max_containers}</span>
-          {burnRate > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px]">
-              <span className="text-amber-700 dark:text-amber-400">burning</span>
-              <span className="font-mono font-semibold tabular-nums text-foreground">
-                {formatRateUSD(burnRate)}
-              </span>
-            </span>
-          )}
         </div>
         <div className="flex items-center gap-2">
           {terminatedCount > 0 && (
@@ -273,7 +262,15 @@ function WorkerCostCell({ w }: { w: WorkerRow }) {
   }
   return (
     <td className="px-4 py-3 font-mono text-xs tabular-nums">
-      {formatCostUSD(live)}
+      <span
+        className={cn(
+          "inline-flex items-center gap-1",
+          isLive && "text-amber-600 dark:text-amber-400",
+        )}
+      >
+        {isLive && <BurnFlame />}
+        {formatCostUSD(live)}
+      </span>
     </td>
   );
 }

@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { DollarSign, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { formatCostUSD } from "@/lib/cost";
 import {
   Select,
   SelectContent,
@@ -151,14 +152,17 @@ export function AuditList({ initial }: { initial: AuditLogRecord[] }) {
                 </td>
                 <td className="px-4 py-2 align-top">
                   {e.details ? (
-                    <details className="max-w-md">
-                      <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
-                        view
-                      </summary>
-                      <pre className="mt-1 max-h-48 overflow-auto rounded-md border border-border bg-muted/40 p-2 font-mono text-[11px]">
-                        {JSON.stringify(e.details, null, 2)}
-                      </pre>
-                    </details>
+                    <div className="space-y-1">
+                      <CostPill details={e.details} />
+                      <details className="max-w-md">
+                        <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                          view
+                        </summary>
+                        <pre className="mt-1 max-h-48 overflow-auto rounded-md border border-border bg-muted/40 p-2 font-mono text-[11px]">
+                          {JSON.stringify(e.details, null, 2)}
+                        </pre>
+                      </details>
+                    </div>
                   ) : (
                     <span className="text-xs text-muted-foreground">—</span>
                   )}
@@ -177,4 +181,30 @@ export function AuditList({ initial }: { initial: AuditLogRecord[] }) {
       </div>
     </div>
   );
+}
+
+/** Surfaces a "spent $X.XX" pill when the audit row's details include a
+ * cost breakdown (final_cost_usd from compute.delete / benchmark.delete).
+ * Renders nothing for non-cost events so the column stays tidy. */
+function CostPill({ details }: { details: Record<string, unknown> }) {
+  const cost = details.final_cost_usd;
+  if (typeof cost !== "number" || !Number.isFinite(cost)) return null;
+  const dur = typeof details.duration_s === "number" ? details.duration_s : null;
+  return (
+    <div className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[11px] tabular-nums">
+      <DollarSign className="h-3 w-3 text-amber-700 dark:text-amber-400" />
+      <span className="font-semibold text-foreground">{formatCostUSD(cost)}</span>
+      {dur != null && (
+        <span className="text-muted-foreground">· {fmtDurationShort(dur)}</span>
+      )}
+    </div>
+  );
+}
+
+function fmtDurationShort(secs: number): string {
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
 }

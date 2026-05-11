@@ -173,6 +173,29 @@
   }
 }
 
+/* Burn-rate flame: subtle flicker for the live-cost UI. Combines a quick
+ * opacity/scale jitter (real candle flames don't pulse evenly) with a slow
+ * hue shift between orange and red so it reads as "burning" without being
+ * loud. Respects prefers-reduced-motion. */
+@keyframes burn-flicker {
+  0%   { opacity: 0.95; transform: translateY(0)    scale(1)    rotate(-1deg); filter: hue-rotate(0deg); }
+  18%  { opacity: 1;    transform: translateY(-1px) scale(1.08) rotate(2deg);  filter: hue-rotate(-8deg); }
+  37%  { opacity: 0.85; transform: translateY(0)    scale(0.96) rotate(-2deg); filter: hue-rotate(4deg); }
+  56%  { opacity: 1;    transform: translateY(-1px) scale(1.06) rotate(1deg);  filter: hue-rotate(-6deg); }
+  78%  { opacity: 0.9;  transform: translateY(0)    scale(1)    rotate(-1deg); filter: hue-rotate(2deg); }
+  100% { opacity: 0.95; transform: translateY(0)    scale(1)    rotate(0);    filter: hue-rotate(0deg); }
+}
+.burn-flame {
+  animation: burn-flicker 850ms ease-in-out infinite;
+  color: rgb(234 88 12);              /* orange-600 */
+  fill: rgba(251, 146, 60, 0.45);     /* orange-400 @ 45% */
+  transform-origin: center bottom;
+  will-change: transform, opacity, filter;
+}
+@media (prefers-reduced-motion: reduce) {
+  .burn-flame { animation: none; }
+}
+
 /* Collapsible animations (Radix uses these) */
 @keyframes collapsible-down {
   from { height: 0; opacity: 0; }

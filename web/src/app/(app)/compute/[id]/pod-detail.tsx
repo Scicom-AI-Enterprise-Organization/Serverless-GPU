@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { gateway } from "@/lib/gateway";
 import { formatCostUSD, formatRateUSD, useLiveCost } from "@/lib/cost";
+import { BurnFlame } from "@/components/burn-flame";
 import type { ComputePod, ComputeStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -348,7 +349,13 @@ function LiveCostField({ pod }: { pod: ComputePod }) {
       <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
         Cost {isLive ? "(live)" : ""}
       </dt>
-      <dd className="mt-0.5 break-words text-sm tabular-nums">
+      <dd
+        className={cn(
+          "mt-0.5 flex items-center gap-1.5 break-words text-sm tabular-nums",
+          isLive && "text-amber-600 dark:text-amber-400",
+        )}
+      >
+        {isLive && <BurnFlame />}
         {formatCostUSD(live)}
       </dd>
     </div>

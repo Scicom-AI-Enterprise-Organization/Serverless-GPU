@@ -762,6 +762,11 @@ async def delete_compute(
 
     runpod_id = p.runpod_pod_id
     pod_name = p.name
+    # Snapshot billing inputs BEFORE we overwrite terminated_at — the audit
+    # helper measures cost as (terminated_at or now - ready_at) × rate, and
+    # we want it pinned to "the moment of deletion".
+    ready_at = p.ready_at
+    cost_per_hr = p.cost_per_hr
     p.status = "terminated"
     p.terminated_at = datetime.now(timezone.utc)
     await session.commit()
@@ -770,8 +775,14 @@ async def delete_compute(
         # Fire-and-forget — gateway shouldn't block on RunPod's API.
         asyncio.create_task(_delete_runpod(runpod_id))
 
+    details: dict[str, Any] = {}
+    if runpod_id:
+        details["runpod_pod_id"] = runpod_id
+    cost = audit.cost_breakdown(ready_at, p.terminated_at, cost_per_hr)
+    if cost is not None:
+        details.update(cost)
     await audit.record(
         user, "compute.delete", "compute", pod_id, pod_name,
-        details={"runpod_pod_id": runpod_id} if runpod_id else None,
+        details=details or None,
     )
     return {"ok": True, "id": pod_id}

@@ -12,21 +12,27 @@ export type TerminalTheme = (typeof TERMINAL_THEMES)[number];
 
 const STORAGE_KEY = "sgpu_terminal_theme";
 
+// The free-tier default. Other themes sit behind a "burn $100 first" paywall
+// (UI-only — no actual billing logic).
+export const DEFAULT_TERMINAL_THEME: TerminalTheme = "rainbow";
+export const PAYWALLED_THEMES: ReadonlySet<TerminalTheme> = new Set<TerminalTheme>([
+  "default",
+  "classic",
+  "sparkle",
+  "christmas",
+]);
+
 export function readTerminalTheme(): TerminalTheme {
-  if (typeof window === "undefined") return "default";
+  if (typeof window === "undefined") return DEFAULT_TERMINAL_THEME;
   const v = window.localStorage.getItem(STORAGE_KEY);
   return (TERMINAL_THEMES as readonly string[]).includes(v ?? "")
     ? (v as TerminalTheme)
-    : "default";
+    : DEFAULT_TERMINAL_THEME;
 }
 
 export function writeTerminalTheme(theme: TerminalTheme) {
   if (typeof window === "undefined") return;
-  if (theme === "default") {
-    window.localStorage.removeItem(STORAGE_KEY);
-  } else {
-    window.localStorage.setItem(STORAGE_KEY, theme);
-  }
+  window.localStorage.setItem(STORAGE_KEY, theme);
   applyTerminalTheme(theme);
 }
 
