@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Bookmark,
+  Box,
   ChevronDown,
   ChevronRight,
   Cpu,
@@ -69,12 +70,33 @@ const GPU_OPTIONS = [
   { id: "NVIDIA H100 80GB HBM3", label: "H100 80GB", hint: "fastest" },
 ];
 
+// Container image presets for the RunPod pod. CUDA version matters because
+// flashinfer's Hopper kernels (used by Qwen3-Next + GDN linear attention)
+// need PTX intrinsics that only exist in CUDA 12.6+ — CUDA 12.4 will fail
+// to JIT-compile gdn_prefill_sm90 mid-inference.
+const DEFAULT_CONTAINER_IMAGE =
+  "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04";
+const CONTAINER_IMAGE_OPTIONS = [
+  {
+    id: DEFAULT_CONTAINER_IMAGE,
+    label: "CUDA 12.4 · pytorch 2.4",
+    hint: "default",
+  },
+  {
+    id: "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404",
+    label: "CUDA 12.8 · torch 2.8",
+    hint: "Qwen3-Next / flashinfer GDN · official RunPod template",
+  },
+];
+const CUSTOM_IMAGE_SENTINEL = "__custom__";
+
 type FormState = {
   benchName: string;
   gpu_type: string;
   gpu_count: number;
   secure_cloud: boolean;
   disk_size: number;
+  container_image: string;
   model_repo_id: string;
   // All vLLM engine args are strings so empty = "use vLLM default" — same
   // ergonomics as the serverless endpoint create form.
@@ -108,6 +130,7 @@ const DEFAULTS: FormState = {
   gpu_count: 1,
   secure_cloud: false,
   disk_size: 80,
+  container_image: DEFAULT_CONTAINER_IMAGE,
   model_repo_id: "Qwen/Qwen2.5-0.5B-Instruct",
   tensor_parallel_size: "",
   data_parallel_size: "",
@@ -241,7 +264,7 @@ function renderYaml(s: FormState): string {
     instance_type: on_demand
     secure_cloud: ${s.secure_cloud}
   container:
-    image: "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+    image: "${s.container_image || DEFAULT_CONTAINER_IMAGE}"
     disk_size: ${s.disk_size}
   storage:
     volume_size: ${s.disk_size}
@@ -590,6 +613,18 @@ export function BenchmarkForm({
                 </Select>
               </FieldWrap>
             </Grid>
+          </SectionCard>
+
+          {/* Container image — picks the CUDA / pytorch baseline on the pod. */}
+          <SectionCard
+            icon={<Box className="h-4 w-4" />}
+            title="Container"
+            description="Base image the RunPod pod boots from. CUDA version must match what your model needs."
+          >
+            <ContainerImagePicker
+              value={form.container_image}
+              onChange={(v) => field("container_image", v)}
+            />
           </SectionCard>
 
           {/* Engine runtime — what gets installed on the pod */}
@@ -1217,6 +1252,65 @@ function FieldWrap({
       <Label className="text-xs font-medium">{label}</Label>
       {children}
       {hint && <p className="text-[11px] leading-snug text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+function ContainerImagePicker({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const isPreset = CONTAINER_IMAGE_OPTIONS.some((p) => p.id === value);
+  return (
+    <div className="space-y-3">
+      <FieldWrap
+        label="Image"
+        hint="Qwen3-Next + vLLM ≥ 0.17 needs CUDA 12.6+ for the flashinfer GDN kernel. Stick with CUDA 12.4 for everything else."
+        wide
+      >
+        <Select
+          value={isPreset ? value : CUSTOM_IMAGE_SENTINEL}
+          onValueChange={(v) => {
+            if (v === CUSTOM_IMAGE_SENTINEL) {
+              if (isPreset) onChange("");
+            } else {
+              onChange(v);
+            }
+          }}
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CONTAINER_IMAGE_OPTIONS.map((o) => (
+              <SelectItem key={o.id} value={o.id}>
+                <div className="flex w-full items-center justify-between gap-3">
+                  <span>{o.label}</span>
+                  <span className="text-xs text-muted-foreground">{o.hint}</span>
+                </div>
+              </SelectItem>
+            ))}
+            <SelectItem value={CUSTOM_IMAGE_SENTINEL}>Custom…</SelectItem>
+          </SelectContent>
+        </Select>
+      </FieldWrap>
+      {!isPreset && (
+        <FieldWrap
+          label="Custom image"
+          hint="Full Docker reference, e.g. runpod/pytorch:2.8.0-py3.11-cuda12.8.1-devel-ubuntu22.04"
+          wide
+        >
+          <Input
+            className="font-mono"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={DEFAULT_CONTAINER_IMAGE}
+          />
+        </FieldWrap>
+      )}
     </div>
   );
 }
