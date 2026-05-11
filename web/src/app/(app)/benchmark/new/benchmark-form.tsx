@@ -12,6 +12,7 @@ import {
   Gauge,
   Info,
   Loader2,
+  Package,
   Server,
   Sparkles,
   Trash2,
@@ -28,6 +29,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -82,6 +84,7 @@ type FormState = {
   gpu_memory_utilization: string;
   max_num_seqs: string;
   dtype: "auto" | "bfloat16" | "float16" | "float32";
+  vllm_version: string;
   // Cmdline-style flags appended to vLLM. Parsed into snake_case serve: keys
   // at render time. e.g. "--enforce-eager --quantization awq"
   extra_args_raw: string;
@@ -112,10 +115,11 @@ const DEFAULTS: FormState = {
   gpu_memory_utilization: "",
   max_num_seqs: "",
   dtype: "auto",
+  vllm_version: "0.15.0",
   // Benchmark-default extras: prefix caching off (so cache hits don't skew
-  // numbers) + log requests off (so stdout spam doesn't tank throughput).
-  // User can edit or clear this freely.
-  extra_args_raw: "--no-enable-prefix-caching --disable-log-requests",
+  // numbers). --disable-log-requests was removed in vLLM > 0.15 and now
+  // causes the server to refuse to start, so it's no longer in the default.
+  extra_args_raw: "--no-enable-prefix-caching",
   request_rate: "inf",
   sweep_mode: false,
   input_len: 256,
@@ -254,7 +258,7 @@ remote:
     path: ~/.venv
     python_version: "3.11"
   dependencies:
-    - vllm==0.15.0
+    - vllm==${s.vllm_version || "0.15.0"}
     - huggingface_hub
     - hf_transfer
 
@@ -371,7 +375,7 @@ export function BenchmarkForm() {
   }
 
   return (
-    <form onSubmit={onSubmit} className="mx-auto max-w-5xl space-y-6 pb-24">
+    <form onSubmit={onSubmit} className="mx-auto max-w-5xl space-y-6">
       {/* Header — plain, no gradient. */}
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Create benchmark</h1>
@@ -578,6 +582,28 @@ export function BenchmarkForm() {
             </Grid>
           </SectionCard>
 
+          {/* Engine runtime — what gets installed on the pod */}
+          <SectionCard
+            icon={<Package className="h-4 w-4" />}
+            title="Engine"
+            description="Pinned vLLM version installed on the pod via uv pip."
+          >
+            <Grid>
+              <FieldWrap
+                label="vLLM version"
+                hint="Newer versions may drop CLI flags (e.g. --disable-log-requests was removed after 0.15)."
+                wide
+              >
+                <Input
+                  className="font-mono"
+                  value={form.vllm_version}
+                  onChange={(e) => field("vllm_version", e.target.value)}
+                  placeholder="0.15.0"
+                />
+              </FieldWrap>
+            </Grid>
+          </SectionCard>
+
           {/* Model + Serve */}
           <SectionCard
             icon={<Cpu className="h-4 w-4" />}
@@ -733,10 +759,12 @@ export function BenchmarkForm() {
             )}
           </SectionCard>
 
-          {/* YAML preview */}
+          {/* YAML preview — plain code block, not a terminal. Capped height so
+              long configs don't bleed under the sticky action bar. */}
           <details className="group rounded-lg border border-border">
-            <summary className="flex cursor-pointer items-center justify-between gap-2 px-4 py-3 text-sm font-medium hover:bg-muted/40">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-sm font-medium hover:bg-muted/40 [&::-webkit-details-marker]:hidden">
               <div className="flex items-center gap-2">
+                <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-90" />
                 <FileCode2 className="h-4 w-4 text-muted-foreground" />
                 YAML preview
                 <Badge variant="secondary" className="text-[10px]">
@@ -745,7 +773,7 @@ export function BenchmarkForm() {
               </div>
               <Info className="h-3.5 w-3.5 text-muted-foreground" />
             </summary>
-            <pre className="terminal-block overflow-x-auto rounded-b-lg border-t border-border bg-zinc-950 px-4 py-3 font-mono text-xs leading-relaxed text-zinc-200">
+            <pre className="max-h-96 overflow-auto rounded-b-lg border-t border-border bg-muted/40 px-4 py-3 font-mono text-xs leading-relaxed text-foreground">
               {formYaml}
             </pre>
           </details>
@@ -767,21 +795,15 @@ export function BenchmarkForm() {
                 spellCheck={false}
                 value={yamlBuf}
                 onChange={(e) => setYamlBuf(e.target.value)}
-                className="rounded-md border border-border bg-zinc-950 font-mono text-xs leading-relaxed text-zinc-200 focus-visible:ring-foreground/40"
+                className="rounded-md border border-border bg-muted/40 font-mono text-xs leading-relaxed text-foreground focus-visible:ring-foreground/30"
               />
             </CardContent>
           </Card>
         </TabsContent>
       </Tabs>
 
-      {/* Sticky-feeling action bar */}
-      <div
-        className={cn(
-          "sticky bottom-0 -mx-6 mt-6 flex items-center justify-between gap-3",
-          "border-t border-border bg-background/85 px-6 py-4 backdrop-blur",
-          "lg:-mx-10 lg:px-10",
-        )}
-      >
+      {/* Action bar — plain, sits at the bottom of the form (not floating). */}
+      <div className="mt-6 flex items-center justify-between gap-3 border-t border-border pt-4">
         <div className="text-xs text-muted-foreground">
           A new RunPod pod will be created and torn down automatically.
         </div>
@@ -898,24 +920,18 @@ function SweepToggle({
           {runs} run{runs === 1 ? "" : "s"}
         </Badge>
       )}
-      <button
-        type="button"
-        onClick={() => onChange(!on)}
-        className={cn(
-          "inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors",
-          on
-            ? "border-foreground/60 bg-foreground/5 text-foreground"
-            : "border-border bg-background text-muted-foreground hover:bg-muted/40",
-        )}
+      <Label
+        htmlFor="sweep-switch"
+        className="cursor-pointer text-xs font-medium text-muted-foreground"
       >
-        <span
-          className={cn(
-            "inline-block h-2 w-2 rounded-full",
-            on ? "bg-foreground" : "bg-muted-foreground/40",
-          )}
-        />
         Sweep
-      </button>
+      </Label>
+      <Switch
+        id="sweep-switch"
+        checked={on}
+        onCheckedChange={onChange}
+        size="sm"
+      />
     </div>
   );
 }

@@ -48,7 +48,7 @@ from .db import Base, User, get_session, session_factory
 logger = logging.getLogger("gateway.bench")
 
 LOG_LIST_CAP = 5000          # max lines retained in redis per bench
-LOG_LIST_TTL_S = 86400       # 24h after benchmark completes
+LOG_LIST_TTL_S = 12_960_000  # ~5 months after benchmark completes
 
 
 # ---------- DB model ----------------------------------------------------

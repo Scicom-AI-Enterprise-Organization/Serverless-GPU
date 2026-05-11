@@ -5,6 +5,7 @@ import yaml from "js-yaml";
 import {
   AlertCircle,
   Check,
+  ChevronRight,
   Copy,
   Cpu,
   FileCode2,
@@ -404,9 +405,10 @@ function RawYamlBlock({ yaml: src }: { yaml: string }) {
     });
   }
   return (
-    <details className="rounded-lg border border-border">
-      <summary className="flex cursor-pointer items-center justify-between gap-2 px-4 py-3 text-sm font-medium hover:bg-muted/40">
+    <details className="group rounded-lg border border-border">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-sm font-medium hover:bg-muted/40 [&::-webkit-details-marker]:hidden">
         <div className="flex items-center gap-2">
+          <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-90" />
           <FileCode2 className="h-4 w-4 text-muted-foreground" />
           Raw YAML
           <Badge variant="secondary" className="text-[10px]">
@@ -426,7 +428,7 @@ function RawYamlBlock({ yaml: src }: { yaml: string }) {
           {copied ? "Copied" : "Copy"}
         </Button>
       </summary>
-      <pre className="terminal-block overflow-x-auto rounded-b-lg border-t border-border bg-zinc-950 px-4 py-3 font-mono text-xs leading-relaxed text-zinc-200">
+      <pre className="max-h-[60vh] overflow-auto rounded-b-lg border-t border-border bg-muted/40 px-4 py-3 font-mono text-xs leading-relaxed text-foreground">
         {src}
       </pre>
     </details>
