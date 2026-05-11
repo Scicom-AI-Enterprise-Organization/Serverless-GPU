@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Trash2 } from "lucide-react";
+import { Copy, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -101,6 +101,16 @@ export function BenchmarkDetail({ bench: initial }: { bench: BenchmarkRecord }) 
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                router.push(`/benchmark/new?from=${encodeURIComponent(bench.id)}`)
+              }
+            >
+              <Copy className="h-4 w-4" />
+              Duplicate
+            </Button>
             <Button
               variant="outline"
               size="sm"

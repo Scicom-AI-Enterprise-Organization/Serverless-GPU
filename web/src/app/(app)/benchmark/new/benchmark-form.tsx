@@ -278,20 +278,30 @@ ${renderBenchEntries(s)}
 `;
 }
 
-export function BenchmarkForm() {
+export function BenchmarkForm({
+  initialName,
+  initialYaml,
+}: {
+  initialName?: string;
+  initialYaml?: string;
+} = {}) {
   const router = useRouter();
-  const [mode, setMode] = useState<"form" | "yaml">("form");
+  // Duplicate flow: start in YAML mode with the source config pre-filled so
+  // the round-trip is exact (no lossy form parsing). User can still flip
+  // back to Form mode, with the usual caveat that switching resets to
+  // form defaults.
+  const [mode, setMode] = useState<"form" | "yaml">(initialYaml ? "yaml" : "form");
   const [submitting, setSubmitting] = useState(false);
 
   const [form, setForm] = useState<FormState>(DEFAULTS);
-  const [name, setName] = useState(DEFAULTS.benchName);
+  const [name, setName] = useState(initialName ?? DEFAULTS.benchName);
   const availability = useGpuAvailability(
     form.gpu_type,
     form.gpu_count,
     mode === "form",
     form.secure_cloud ? "SECURE" : "COMMUNITY",
   );
-  const [yamlBuf, setYamlBuf] = useState<string>(renderYaml(DEFAULTS));
+  const [yamlBuf, setYamlBuf] = useState<string>(initialYaml ?? renderYaml(DEFAULTS));
   const formYaml = useMemo(
     () => renderYaml({ ...form, benchName: name || "untitled" }),
     [form, name],
