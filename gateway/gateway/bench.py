@@ -440,10 +440,21 @@ async def cleanup_orphaned_running(redis) -> int:
         ids = [row[0] for row in rows.all()]
         await s.commit()
     for bid in ids:
+        # Push the marker line first so it lands in _full.log before we
+        # upload that file as the canonical logs.txt in S3.
         try:
             await _push_log(redis, bid, "[gateway] orphaned by gateway restart — marking failed")
         except Exception:
             pass
+        # Upload whatever we managed to capture on disk so the Logs tab can
+        # replay it. Without this, the stream falls back to the trimmed redis
+        # tail and the user loses the head of the run.
+        full_log = _full_log_path(bid)
+        if full_log.exists():
+            try:
+                s3_put_file(f"{benchmark_s3_prefix(bid)}logs.txt", str(full_log))
+            except Exception as e:
+                logger.warning("orphan %s: failed to upload _full.log: %s", bid, e)
     return len(ids)
 
 
@@ -886,42 +897,73 @@ async def stream_logs(
         raise HTTPException(status_code=403, detail={"error": "forbidden"})
 
     redis = request.app.state.redis
-    # If the bench is already terminal and we've uploaded logs.txt to S3,
-    # stream the full log from there — this is the canonical, uncapped copy.
-    # Redis may have been trimmed or TTL'd by now, so it would otherwise show
-    # a partial / empty log for older runs.
     initial_status = b.status
+    # Source-of-truth for logs is the on-disk _full.log (uncapped) while the
+    # bench is live, and S3 logs.txt once it's been uploaded. Redis is only a
+    # last-resort fallback for benches that ran before the on-disk tee landed.
     s3_full_log: Optional[str] = None
     if initial_status in ("done", "failed", "cancelled"):
         s3_full_log = s3_get_text(f"{benchmark_s3_prefix(bench_id)}logs.txt")
+    full_log = _full_log_path(bench_id)
 
     async def gen() -> AsyncIterator[bytes]:
+        # 1) Terminal + S3 has it → stream the canonical copy and close.
         if s3_full_log is not None:
             for line in s3_full_log.splitlines():
                 yield f"data: {line}\n\n".encode("utf-8")
             yield f"event: end\ndata: {initial_status}\n\n".encode("utf-8")
             return
 
-        key = f"bench:logs:{bench_id}"
-        # Replay everything we already have, then poll for new lines until terminal.
-        cursor = 0
-        while True:
+        # 2) Terminal but no S3 copy and no on-disk file → legacy bench, fall
+        # back to whatever redis still has (will be trimmed, but it's all we've
+        # got). Newer terminal benches always have one of the above.
+        if initial_status in ("done", "failed", "cancelled") and not full_log.exists():
+            key = f"bench:logs:{bench_id}"
             try:
-                lines = await redis.lrange(key, cursor, cursor + 199)
+                lines = await redis.lrange(key, 0, -1)
             except Exception:
                 lines = []
-            if lines:
-                for line in lines:
+            for line in lines:
+                yield f"data: {line}\n\n".encode("utf-8")
+            yield f"event: end\ndata: {initial_status}\n\n".encode("utf-8")
+            return
+
+        # 3) Live or recently-terminal: tail _full.log from disk. This is the
+        # uncapped, canonical record — the file is appended to on every
+        # _push_log call, so we just keep reading from where we left off.
+        pos = 0
+        buf = b""
+        while True:
+            chunk = b""
+            if full_log.exists():
+                try:
+                    with full_log.open("rb") as f:
+                        f.seek(pos)
+                        chunk = f.read()
+                        pos += len(chunk)
+                except Exception:
+                    chunk = b""
+            if chunk:
+                buf += chunk
+                while True:
+                    nl = buf.find(b"\n")
+                    if nl < 0:
+                        break
+                    line = buf[:nl].decode("utf-8", "replace")
+                    buf = buf[nl + 1:]
                     yield f"data: {line}\n\n".encode("utf-8")
-                cursor += len(lines)
-            else:
-                # Check terminal status — if so, send a final marker and close.
-                async with session_factory()() as s:
-                    cur = await s.get(Benchmark, bench_id)
-                if cur and cur.status in ("done", "failed", "cancelled"):
-                    yield f"event: end\ndata: {cur.status}\n\n".encode("utf-8")
-                    return
-                await asyncio.sleep(1.0)
+                continue
+            # No new bytes — check whether the run finished.
+            async with session_factory()() as s:
+                cur = await s.get(Benchmark, bench_id)
+            if cur and cur.status in ("done", "failed", "cancelled"):
+                # Flush any trailing partial line (run ended mid-write).
+                if buf:
+                    yield f"data: {buf.decode('utf-8', 'replace')}\n\n".encode("utf-8")
+                    buf = b""
+                yield f"event: end\ndata: {cur.status}\n\n".encode("utf-8")
+                return
+            await asyncio.sleep(1.0)
 
     return StreamingResponse(
         gen(),
