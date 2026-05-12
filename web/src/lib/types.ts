@@ -18,6 +18,9 @@ export type AppRecord = {
   request_timeout_s: number;
   vllm_args: string;
   enable_metrics: boolean;
+  cloud_type?: "COMMUNITY" | "SECURE" | null;
+  container_disk_gb?: number | null;
+  volume_gb?: number | null;
   created_at: string;
   owner: string;
 };
@@ -33,6 +36,9 @@ export type CreateAppRequest = {
   request_timeout_s?: number;
   vllm_args?: string;
   enable_metrics?: boolean;
+  cloud_type?: "COMMUNITY" | "SECURE";
+  container_disk_gb?: number;
+  volume_gb?: number;
 };
 
 export type CreateAppResponse = {

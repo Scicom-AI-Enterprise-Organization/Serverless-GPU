@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Copy, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,10 +38,25 @@ const STATUS_STYLES: Record<string, string> = {
   cancelled: "border border-border bg-muted text-muted-foreground",
 };
 
+type BenchTab = (typeof TABS)[number]["value"];
+const BENCH_TAB_VALUES = TABS.map((t) => t.value) as readonly string[];
+
 export function BenchmarkDetail({ bench: initial }: { bench: BenchmarkRecord }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const initialTab: BenchTab = (() => {
+    const t = searchParams.get("tab");
+    return t && BENCH_TAB_VALUES.includes(t) ? (t as BenchTab) : "logs";
+  })();
   const [bench, setBench] = useState(initial);
-  const [tab, setTab] = useState<(typeof TABS)[number]["value"]>("logs");
+  const [tab, setTabState] = useState<BenchTab>(initialTab);
+  const setTab = (v: BenchTab) => {
+    setTabState(v);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("tab", v);
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [pending, startTransition] = useTransition();
   const [deleteError, setDeleteError] = useState<string | null>(null);

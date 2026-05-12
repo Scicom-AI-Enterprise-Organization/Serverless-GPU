@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
+import { cn } from "@/lib/utils";
 import { deployEndpoint } from "../actions";
 import { AvailabilityBadge } from "@/components/availability-badge";
 import { useGpuAvailability } from "@/lib/use-gpu-availability";
@@ -134,8 +135,10 @@ export function InferenceForm() {
   const [model, setModel] = useState("");
   const [gpu, setGpu] = useState("RTX3090");
   const [gpuCount, setGpuCount] = useState<number>(1);
-  const [idleInput, setIdleInput] = useState("");
-  const [alwaysOn, setAlwaysOn] = useState(true);
+  const [cloudType, setCloudType] = useState<"COMMUNITY" | "SECURE">("COMMUNITY");
+  const [containerDisk, setContainerDisk] = useState<string>("50");
+  const [volumeGb, setVolumeGb] = useState<string>("0");
+  const [idleInput, setIdleInput] = useState("0");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [enableMetrics, setEnableMetrics] = useState(true);
   const [vllm, setVllm] = useState({ ...DEFAULT_VLLM_ARGS });
@@ -161,13 +164,20 @@ export function InferenceForm() {
     intFieldInvalid(vllm.max_num_seqs) ||
     intFieldInvalid(vllm.tensor_parallel_size);
 
-  const availability = useGpuAvailability(gpu, gpuCount, true);
+  const parsedDisk = Number.parseInt(containerDisk, 10);
+  const diskInvalid =
+    !Number.isFinite(parsedDisk) || parsedDisk < 1 || parsedDisk > 2000;
+  const parsedVolume = Number.parseInt(volumeGb, 10);
+  const volumeInvalid =
+    !Number.isFinite(parsedVolume) || parsedVolume < 0 || parsedVolume > 4000;
+
+  const availability = useGpuAvailability(gpu, gpuCount, true, cloudType);
   const explicitlyUnavailable =
     availability.status === "ok" && availability.data.available === false;
 
   const parsedIdle = Number.parseInt(idleInput, 10);
   const idleInvalid =
-    !alwaysOn && (!Number.isFinite(parsedIdle) || parsedIdle < 1 || parsedIdle > 86400);
+    !Number.isFinite(parsedIdle) || parsedIdle < 0 || parsedIdle > 86400;
 
   function submit() {
     setSubmitError(null);
@@ -177,12 +187,20 @@ export function InferenceForm() {
     }
     if (idleInvalid) {
       setSubmitError(
-        "Enter a positive idle timeout in seconds, or tick 'No idle timeout'.",
+        "Enter a non-negative idle timeout in seconds (0 keeps the worker on forever).",
       );
       return;
     }
     if (advancedInvalid) {
       setSubmitError("Fix the invalid values in Advanced options.");
+      return;
+    }
+    if (diskInvalid) {
+      setSubmitError("Container disk must be between 1 and 2000 GB.");
+      return;
+    }
+    if (volumeInvalid) {
+      setSubmitError("Volume must be between 0 and 4000 GB.");
       return;
     }
     if (explicitlyUnavailable) {
@@ -201,10 +219,13 @@ export function InferenceForm() {
         gpu_count: gpuCount,
         autoscaler: {
           max_containers: MAX_WORKERS,
-          idle_timeout_s: alwaysOn ? 0 : parsedIdle,
+          idle_timeout_s: parsedIdle,
         },
         vllm_args: vllmArgs,
         enable_metrics: enableMetrics,
+        cloud_type: cloudType,
+        container_disk_gb: parsedDisk,
+        volume_gb: parsedVolume,
       });
       if (!res.ok) {
         if (res.unavailable) {
@@ -228,131 +249,184 @@ export function InferenceForm() {
         </p>
       </div>
 
-      <div className="space-y-5 rounded-xl border border-border bg-card p-6">
-        <Field
-          label="Inference framework"
-          hint="Choose the inference server. Only vLLM is enabled today."
-        >
-          <Select value={framework} onValueChange={setFramework}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {FRAMEWORKS.map((f) => (
-                <SelectItem key={f.value} value={f.value} disabled={!f.available}>
-                  {f.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
-
-        <Field
-          label="GPU"
-          hint={(() => {
-            const g = GPU_CHOICES.find((c) => c.value === gpu);
-            return g ? capacityHint(g.vramGb, gpuCount) : undefined;
-          })()}
-          extra={<AvailabilityBadge state={availability} count={gpuCount} />}
-        >
-          <div className="flex gap-2">
-            <SearchableSelect
-              className="flex-1"
-              value={gpu}
-              onChange={setGpu}
-              options={GPU_CHOICES.map((g) => ({
-                value: g.value,
-                label: g.label,
-                group: g.group,
-                hint: capacityHint(g.vramGb, 1),
-              }))}
-              placeholder="Choose a GPU"
-              searchPlaceholder="Search GPUs (e.g. h100, 24gb, ada)…"
-            />
-            <Select
-              value={String(gpuCount)}
-              onValueChange={(v) => setGpuCount(Number.parseInt(v, 10))}
+      <div className="space-y-5">
+        <Section title="Instance" description="GPU, count, and cloud tier the workers run on.">
+          <div className="space-y-5">
+            <Field
+              label="GPU"
+              hint={(() => {
+                const g = GPU_CHOICES.find((c) => c.value === gpu);
+                return g ? capacityHint(g.vramGb, gpuCount) : undefined;
+              })()}
+              extra={<AvailabilityBadge state={availability} count={gpuCount} />}
             >
-              <SelectTrigger className="w-24 shrink-0">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {GPU_COUNT_CHOICES.map((n) => (
-                  <SelectItem key={n} value={String(n)}>
-                    ×{n}
-                  </SelectItem>
+              <div className="flex gap-2">
+                <SearchableSelect
+                  className="flex-1"
+                  value={gpu}
+                  onChange={setGpu}
+                  options={GPU_CHOICES.map((g) => ({
+                    value: g.value,
+                    label: g.label,
+                    group: g.group,
+                    hint: capacityHint(g.vramGb, 1),
+                  }))}
+                  placeholder="Choose a GPU"
+                  searchPlaceholder="Search GPUs (e.g. h100, 24gb, ada)…"
+                />
+                <Select
+                  value={String(gpuCount)}
+                  onValueChange={(v) => setGpuCount(Number.parseInt(v, 10))}
+                >
+                  <SelectTrigger className="w-24 shrink-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {GPU_COUNT_CHOICES.map((n) => (
+                      <SelectItem key={n} value={String(n)}>
+                        ×{n}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </Field>
+
+            <Field
+              label="Cloud tier"
+              hint="Community is cheaper with variable hosts; Secure uses vetted hosts with more capacity."
+            >
+              <div className="grid grid-cols-2 gap-2">
+                {(["COMMUNITY", "SECURE"] as const).map((tier) => (
+                  <button
+                    key={tier}
+                    type="button"
+                    onClick={() => setCloudType(tier)}
+                    className={cn(
+                      "rounded-md border p-3 text-left transition-colors",
+                      cloudType === tier
+                        ? "border-foreground/60 ring-1 ring-foreground/20"
+                        : "border-border hover:border-foreground/40",
+                    )}
+                  >
+                    <div className="text-sm font-medium">
+                      {tier === "COMMUNITY" ? "Community" : "Secure"}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      {tier === "COMMUNITY"
+                        ? "cheaper, variable hosts"
+                        : "vetted hosts, more capacity"}
+                    </div>
+                  </button>
                 ))}
-              </SelectContent>
-            </Select>
+              </div>
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field
+                label="Container disk (GB)"
+                hint="Ephemeral workspace. Resets when the worker stops."
+              >
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  value={containerDisk}
+                  onChange={(e) => setContainerDisk(e.target.value)}
+                  placeholder="50"
+                  aria-invalid={diskInvalid}
+                />
+              </Field>
+              <Field
+                label="Volume (GB)"
+                hint="Persistent volume. 0 = no persistent storage."
+              >
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  value={volumeGb}
+                  onChange={(e) => setVolumeGb(e.target.value)}
+                  placeholder="0"
+                  aria-invalid={volumeInvalid}
+                />
+              </Field>
+            </div>
+
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                Pick a GPU with enough VRAM for your model. vLLM will fail to load if the
+                weights plus KV cache exceed GPU memory.
+              </span>
+            </div>
           </div>
-        </Field>
+        </Section>
 
-        <Field label="Endpoint name" required>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="my-endpoint"
-            className="bg-muted"
-          />
-        </Field>
+        <Section title="Endpoint" description="What you'll call this endpoint and the model it serves.">
+          <div className="space-y-5">
+            <Field
+              label="Inference framework"
+              hint="Choose the inference server. Only vLLM is enabled today."
+            >
+              <Select value={framework} onValueChange={setFramework}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {FRAMEWORKS.map((f) => (
+                    <SelectItem key={f.value} value={f.value} disabled={!f.available}>
+                      {f.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
 
-        <Field label="Model" hint="Hugging Face repo (e.g. Qwen/Qwen2.5-7B-Instruct)" required>
-          <Input
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="Qwen/Qwen2.5-7B-Instruct"
-            className="bg-muted/50"
-          />
-        </Field>
-
-        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>
-            Pick a GPU with enough VRAM for your model. vLLM will fail to load if the
-            weights plus KV cache exceed GPU memory.
-          </span>
-        </div>
-
-        <Field
-          label="Idle timeout (s)"
-          hint="Worker is torn down after this many seconds with no traffic."
-        >
-          <div className="flex flex-col gap-2">
-            <Input
-              type="text"
-              inputMode="numeric"
-              value={idleInput}
-              onChange={(e) => {
-                setIdleInput(e.target.value);
-                if (e.target.value.trim() !== "") setAlwaysOn(false);
-              }}
-              placeholder={alwaysOn ? "Always-on (no timeout)" : "e.g. 300"}
-              aria-invalid={idleInvalid}
-            />
-            <label className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Checkbox
-                checked={alwaysOn}
-                onCheckedChange={(v) => {
-                  const next = v === true;
-                  setAlwaysOn(next);
-                  if (next) setIdleInput("");
-                }}
+            <Field label="Endpoint name" required>
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="my-endpoint"
+                className="bg-muted"
               />
-              <span>No idle timeout (keep worker up forever)</span>
-            </label>
+            </Field>
+
+            <Field label="Model" hint="Hugging Face repo (e.g. Qwen/Qwen2.5-7B-Instruct)" required>
+              <Input
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="Qwen/Qwen2.5-7B-Instruct"
+                className="bg-muted/50"
+              />
+            </Field>
           </div>
-        </Field>
+        </Section>
 
-        <p className="text-xs text-muted-foreground">
-          Max workers is fixed at <span className="font-medium text-foreground">1</span> for now.
-        </p>
+        <Section title="Engine" description="Scaling behaviour, vLLM args, and metrics.">
+          <div className="space-y-5">
+            <Field
+              label="Idle timeout (s)"
+              hint="Worker is torn down after this many seconds with no traffic. 0 keeps the worker on forever."
+            >
+              <Input
+                type="text"
+                inputMode="numeric"
+                value={idleInput}
+                onChange={(e) => setIdleInput(e.target.value)}
+                placeholder="e.g. 300 (0 = always-on)"
+                aria-invalid={idleInvalid}
+              />
+            </Field>
 
-        <div className="border-t border-border pt-4">
-          <button
-            type="button"
-            onClick={() => setAdvancedOpen((v) => !v)}
-            className="flex w-full items-center gap-1.5 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
-          >
+            <p className="text-xs text-muted-foreground">
+              Max workers is fixed at <span className="font-medium text-foreground">1</span> for now.
+            </p>
+
+            <div className="border-t border-border pt-4">
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((v) => !v)}
+                className="flex w-full items-center gap-1.5 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
+              >
             {advancedOpen ? (
               <ChevronDown className="h-3.5 w-3.5" />
             ) : (
@@ -480,27 +554,29 @@ export function InferenceForm() {
           )}
         </div>
 
-        <div className="border-t border-border pt-4">
-          <label className="flex items-start gap-3 cursor-pointer">
-            <Checkbox
-              checked={enableMetrics}
-              onCheckedChange={(v) => setEnableMetrics(v === true)}
-              className="mt-0.5"
-            />
-            <div className="flex-1">
-              <div className="text-sm font-medium">Enable metrics</div>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                Each worker self-installs Alloy + DCGM, node, and vLLM exporters
-                on boot via ansible-pull. Metrics push to VictoriaMetrics with
-                an{" "}
-                <code className="font-mono text-[11px]">endpoint=&lt;name&gt;</code>{" "}
-                label so you can filter the Grafana dashboard per endpoint.
-                Adds ~20 s to cold-start; runs in the background after vLLM is
-                ready so requests aren't delayed.
-              </p>
+            <div className="border-t border-border pt-4">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <Checkbox
+                  checked={enableMetrics}
+                  onCheckedChange={(v) => setEnableMetrics(v === true)}
+                  className="mt-0.5"
+                />
+                <div className="flex-1">
+                  <div className="text-sm font-medium">Enable metrics</div>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Each worker self-installs Alloy + DCGM, node, and vLLM exporters
+                    on boot via ansible-pull. Metrics push to VictoriaMetrics with
+                    an{" "}
+                    <code className="font-mono text-[11px]">endpoint=&lt;name&gt;</code>{" "}
+                    label so you can filter the Grafana dashboard per endpoint.
+                    Adds ~20 s to cold-start; runs in the background after vLLM is
+                    ready so requests aren't delayed.
+                  </p>
+                </div>
+              </label>
             </div>
-          </label>
-        </div>
+          </div>
+        </Section>
       </div>
 
       <div className="mt-5 flex items-center justify-end gap-3">
@@ -512,7 +588,9 @@ export function InferenceForm() {
         </Button>
         <Button
           onClick={submit}
-          disabled={pending || idleInvalid || advancedInvalid || explicitlyUnavailable}
+          disabled={
+            pending || idleInvalid || advancedInvalid || diskInvalid || volumeInvalid || explicitlyUnavailable
+          }
         >
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
           Create endpoint
@@ -555,6 +633,28 @@ export function InferenceForm() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function Section({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-lg border border-border bg-card p-5">
+      <div className="mb-4">
+        <h2 className="text-sm font-semibold">{title}</h2>
+        {description && (
+          <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+        )}
+      </div>
+      {children}
+    </section>
   );
 }
 

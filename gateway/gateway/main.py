@@ -67,6 +67,11 @@ class CreateAppRequest(BaseModel):
     request_timeout_s: int = 600
     vllm_args: str = ""
     enable_metrics: bool = True
+    # RunPod cloud tier. None = provider default. Only "COMMUNITY" / "SECURE".
+    cloud_type: Optional[str] = None
+    # Per-worker disk sizing. None = provider default.
+    container_disk_gb: Optional[int] = None
+    volume_gb: Optional[int] = None
 
 
 class CreateAppResponse(BaseModel):
@@ -86,6 +91,9 @@ class AppRecord(BaseModel):
     request_timeout_s: int = 600
     vllm_args: str = ""
     enable_metrics: bool = True
+    cloud_type: Optional[str] = None
+    container_disk_gb: Optional[int] = None
+    volume_gb: Optional[int] = None
     created_at: str
     owner: str
 
@@ -245,6 +253,9 @@ def _to_app_record(app: App) -> AppRecord:
         request_timeout_s=app.request_timeout_s,
         vllm_args=app.vllm_args or "",
         enable_metrics=bool(getattr(app, "enable_metrics", True)),
+        cloud_type=getattr(app, "cloud_type", None),
+        container_disk_gb=getattr(app, "container_disk_gb", None),
+        volume_gb=getattr(app, "volume_gb", None),
         created_at=app.created_at.isoformat() if app.created_at else "",
         owner=app.owner.username if app.owner else "",
     )
@@ -865,6 +876,13 @@ async def create_app(
 ):
     if req.gpu_count < 1 or req.gpu_count > 8:
         raise HTTPException(status_code=400, detail="gpu_count must be 1..8")
+    if req.cloud_type is not None and req.cloud_type.upper() not in ("COMMUNITY", "SECURE"):
+        raise HTTPException(status_code=400, detail="cloud_type must be COMMUNITY or SECURE")
+    cloud_type_norm = req.cloud_type.upper() if req.cloud_type else None
+    if req.container_disk_gb is not None and (req.container_disk_gb < 1 or req.container_disk_gb > 2000):
+        raise HTTPException(status_code=400, detail="container_disk_gb must be 1..2000")
+    if req.volume_gb is not None and (req.volume_gb < 0 or req.volume_gb > 4000):
+        raise HTTPException(status_code=400, detail="volume_gb must be 0..4000")
     record = App(
         app_id=req.name,
         owner_id=user.id,
@@ -878,6 +896,9 @@ async def create_app(
         memory=req.memory,
         request_timeout_s=req.request_timeout_s,
         vllm_args=(req.vllm_args or "").strip(),
+        cloud_type=cloud_type_norm,
+        container_disk_gb=req.container_disk_gb,
+        volume_gb=req.volume_gb,
         created_at=datetime.now(timezone.utc),
     )
     session.add(record)
@@ -917,6 +938,9 @@ async def create_app(
                 gpu=req.gpu,
                 env=env,
                 gpu_count=req.gpu_count,
+                cloud_type=cloud_type_norm,
+                container_disk_gb=req.container_disk_gb,
+                volume_gb=req.volume_gb,
             )
             machine_id = result.machine_id
         except Exception as e:

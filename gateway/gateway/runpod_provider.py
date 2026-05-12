@@ -182,6 +182,9 @@ class RunPodProvider(Provider):
         gpu: str,
         env: dict[str, str],
         gpu_count: int = 1,
+        cloud_type: Optional[str] = None,
+        container_disk_gb: Optional[int] = None,
+        volume_gb: Optional[int] = None,
     ) -> "ProvisionResult":
         machine_id = f"m-rp-{uuid.uuid4().hex[:8]}"
         pod_name = f"{self.name_prefix}-{app_id}-{machine_id}"
@@ -201,14 +204,17 @@ class RunPodProvider(Provider):
                 continue
             env_vars[k] = v
 
+        effective_cloud = (cloud_type or self.cloud_type).upper()
+        effective_disk = container_disk_gb if container_disk_gb is not None else self.container_disk_in_gb
+        effective_volume = volume_gb if volume_gb is not None else self.volume_in_gb
         body: dict[str, Any] = {
             "name": pod_name,
             "templateId": self.template_id,
             "gpuTypeIds": [_map_gpu(gpu)],
-            "cloudType": self.cloud_type,
+            "cloudType": effective_cloud,
             "gpuCount": max(1, int(gpu_count)),
-            "containerDiskInGb": self.container_disk_in_gb,
-            "volumeInGb": self.volume_in_gb,
+            "containerDiskInGb": effective_disk,
+            "volumeInGb": effective_volume,
             "env": env_vars,
         }
         if self.allowed_cuda_versions:

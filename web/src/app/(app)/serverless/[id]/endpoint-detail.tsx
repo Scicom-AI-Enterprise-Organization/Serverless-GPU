@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Loader2, MoreHorizontal, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -30,9 +30,24 @@ const TABS = [
   { value: "workers", label: "Workers" },
 ] as const;
 
+type EndpointTab = (typeof TABS)[number]["value"];
+const ENDPOINT_TAB_VALUES = TABS.map((t) => t.value) as readonly string[];
+
 export function EndpointDetail({ app }: { app: AppRecord }) {
   const router = useRouter();
-  const [tab, setTab] = useState<(typeof TABS)[number]["value"]>("overview");
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const initialTab: EndpointTab = (() => {
+    const t = searchParams.get("tab");
+    return t && ENDPOINT_TAB_VALUES.includes(t) ? (t as EndpointTab) : "overview";
+  })();
+  const [tab, setTabState] = useState<EndpointTab>(initialTab);
+  const setTab = (v: EndpointTab) => {
+    setTabState(v);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("tab", v);
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [pending, startTransition] = useTransition();
   const [deleteError, setDeleteError] = useState<string | null>(null);

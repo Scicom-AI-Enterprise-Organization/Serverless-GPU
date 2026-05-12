@@ -136,6 +136,9 @@ class PrimeIntellectProvider(Provider):
         gpu: str,
         env: dict[str, str],
         gpu_count: int = 1,
+        cloud_type: Optional[str] = None,  # noqa: ARG002 — PI has no equivalent
+        container_disk_gb: Optional[int] = None,  # noqa: ARG002
+        volume_gb: Optional[int] = None,  # noqa: ARG002
     ) -> ProvisionResult:
         import uuid as _uuid
 
