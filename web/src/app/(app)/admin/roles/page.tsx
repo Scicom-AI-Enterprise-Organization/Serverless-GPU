@@ -31,9 +31,10 @@ export default async function RolesPage() {
   const roles = await loadRoles(token);
 
   return (
-    <div className="flex min-h-full flex-col">
+    <div className="flex h-full flex-col">
       <ConsoleTopbar crumbs={[{ label: "Roles" }]} username={me.username} />
-      <div className="mx-auto w-full max-w-5xl px-6 py-10">
+      <div className="flex-1 overflow-y-auto px-6 py-6 lg:px-10 lg:py-8 scrollbar-thin">
+        <div className="mx-auto max-w-2xl">
         <header className="mb-8">
           <h1 className="text-2xl font-semibold tracking-tight">Roles</h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
@@ -44,6 +45,7 @@ export default async function RolesPage() {
         </header>
 
         <RolesManager initial={roles} />
+        </div>
       </div>
     </div>
   );

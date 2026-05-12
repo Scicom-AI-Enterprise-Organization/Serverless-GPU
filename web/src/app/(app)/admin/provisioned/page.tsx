@@ -40,9 +40,9 @@ export default async function ProvisionedPage() {
   const { computes, apps } = await load(token);
 
   return (
-    <div className="flex min-h-full flex-col">
+    <div className="flex h-full flex-col">
       <ConsoleTopbar crumbs={[{ label: "Provisioned" }]} username={me.username} />
-      <div className="mx-auto w-full max-w-6xl px-6 py-10">
+      <div className="flex-1 overflow-y-auto px-6 py-6 lg:px-10 lg:py-8 scrollbar-thin">
         <header className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight">Provisioned</h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">

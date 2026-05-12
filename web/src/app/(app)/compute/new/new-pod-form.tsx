@@ -44,6 +44,7 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
   );
   const [secureCloud, setSecureCloud] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const availability = useGpuAvailability(
     gpuType,
@@ -54,8 +55,9 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setSubmitError(null);
     if (!name.trim()) {
-      toast.error("Name required");
+      setSubmitError("Name is required.");
       return;
     }
     setSubmitting(true);
@@ -73,16 +75,17 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
         pod.status === "pending_approval"
           ? "Request submitted — an admin will review and approve."
           : "Pod creating — provisioning takes a few minutes",
+        { duration: 4000 },
       );
       router.push(`/compute/${pod.id}`);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      setSubmitError(e instanceof Error ? e.message : String(e));
       setSubmitting(false);
     }
   }
 
   return (
-    <form onSubmit={onSubmit} className="max-w-3xl space-y-6">
+    <form onSubmit={onSubmit} className="mx-auto max-w-2xl space-y-6">
       {/* Section: identity */}
       <Section title="Pod" description="A short name to remember this pod by.">
         <div className="space-y-1.5">
@@ -211,7 +214,10 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
         </div>
       </Section>
 
-      <div className="flex items-center justify-end gap-2 border-t border-border pt-4">
+      <div className="flex items-center justify-end gap-3 border-t border-border pt-4">
+        {submitError && (
+          <p className="flex-1 text-sm text-destructive">{submitError}</p>
+        )}
         <Button
           type="button"
           variant="ghost"

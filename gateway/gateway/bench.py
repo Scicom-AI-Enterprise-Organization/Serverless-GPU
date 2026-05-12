@@ -438,6 +438,13 @@ async def run_benchmark(redis, bench_id: str, raw_yaml: str) -> None:
                 with full_log.open("r", encoding="utf-8", errors="replace") as f:
                     tail_lines = f.readlines()[-50:]
                 error_excerpt = "".join(tail_lines)[-4000:]
+                # Surface a clean one-liner for known failure patterns so the
+                # list page doesn't show a raw log wall.
+                _cuda_m = re.search(
+                    r"CUDA mismatch[^\n]{0,200}", error_excerpt, re.IGNORECASE
+                )
+                if _cuda_m:
+                    error_excerpt = _cuda_m.group(0).strip()
         except Exception:
             error_excerpt = None
 

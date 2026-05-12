@@ -4,8 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import yaml from "js-yaml";
 import {
+  AlertTriangle,
   Bookmark,
   Box,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Cpu,
@@ -16,6 +18,7 @@ import {
   Loader2,
   Package,
   Server,
+  ShieldAlert,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -90,6 +93,34 @@ const CONTAINER_IMAGE_OPTIONS = [
   },
 ];
 const CUSTOM_IMAGE_SENTINEL = "__custom__";
+
+// CUDA toolkit version → minimum NVIDIA driver version (Linux)
+const CUDA_MIN_DRIVER: Record<string, string> = {
+  "11.0": "450.80", "11.1": "455.23", "11.2": "460.27", "11.3": "465.19",
+  "11.4": "470.57", "11.5": "495.29", "11.6": "510.39", "11.7": "515.43",
+  "11.8": "520.61",
+  "12.0": "525.60", "12.1": "530.30", "12.2": "535.54", "12.3": "545.23",
+  "12.4": "550.54", "12.5": "555.42", "12.6": "560.28", "12.7": "565.57",
+  "12.8": "570.00",
+};
+
+// Extract CUDA major.minor from a container image tag.
+// Handles: cuda12.4.1, cuda12.8, cu1281 (= 12.8.1), cu124 (= 12.4), etc.
+function parseCudaFromImage(image: string): string | null {
+  const m1 = image.match(/cuda[-_]?(\d+)[._](\d+)/i);
+  if (m1) return `${m1[1]}.${m1[2]}`;
+  const m2 = image.match(/\bcu(\d{4})\b/i);
+  if (m2) return `${m2[1].slice(0, 2)}.${m2[1][2]}`;
+  const m3 = image.match(/\bcu(\d{3})\b/i);
+  if (m3) return `${m3[1].slice(0, 2)}.${m3[1][2]}`;
+  return null;
+}
+
+// Pull the container image out of raw YAML text without a full parse.
+function extractImageFromYaml(src: string): string | null {
+  const m = src.match(/^\s+image:\s*["']?([^\s"'\n#]+)["']?\s*$/m);
+  return m ? m[1] : null;
+}
 
 type FormState = {
   benchName: string;
@@ -486,6 +517,7 @@ export function BenchmarkForm({
   // and back-fills the form (lossy for keys the form doesn't represent).
   const [mode, setMode] = useState<"form" | "yaml">(initialYaml ? "yaml" : "form");
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const [form, setForm] = useState<FormState>(DEFAULTS);
   const [name, setName] = useState(initialName ?? DEFAULTS.benchName);
@@ -558,8 +590,9 @@ export function BenchmarkForm({
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setSubmitError(null);
     if (!name.trim()) {
-      toast.error("Name is required");
+      setSubmitError("Name is required.");
       return;
     }
     const config_yaml = mode === "form" ? formYaml : yamlBuf;
@@ -569,17 +602,17 @@ export function BenchmarkForm({
         name: name.trim(),
         config_yaml,
       });
-      toast.success(`Created ${created.id}`);
+      toast.success(`Created ${created.id}`, { duration: 4000 });
       router.push(`/benchmark/${encodeURIComponent(created.id)}`);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      setSubmitError(e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <form onSubmit={onSubmit} className="mx-auto max-w-5xl space-y-6">
+    <form onSubmit={onSubmit} className="mx-auto max-w-2xl space-y-6">
       {/* Header — plain, no gradient. */}
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Create benchmark</h1>
@@ -1042,12 +1075,24 @@ export function BenchmarkForm({
         </TabsContent>
       </Tabs>
 
+      {/* CUDA pre-flight check — shown in both form and YAML mode. */}
+      <CudaPreflightPanel
+        image={
+          mode === "form"
+            ? form.container_image
+            : (extractImageFromYaml(yamlBuf) ?? form.container_image)
+        }
+      />
+
       {/* Action bar — plain, sits at the bottom of the form (not floating). */}
       <div className="mt-6 flex items-center justify-between gap-3 border-t border-border pt-4">
         <div className="text-xs text-muted-foreground">
           A new RunPod pod will be created and torn down automatically.
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {submitError && (
+            <p className="text-sm text-destructive">{submitError}</p>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -1107,6 +1152,78 @@ export function BenchmarkForm({
         </DialogContent>
       </Dialog>
     </form>
+  );
+}
+
+function CudaPreflightPanel({ image }: { image: string }) {
+  const cuda = parseCudaFromImage(image);
+  if (!cuda) return null;
+
+  const minDriver = CUDA_MIN_DRIVER[cuda];
+  const [major, minor] = cuda.split(".").map(Number);
+
+  type Status = "ok" | "warn" | "risk";
+  let status: Status;
+  let msg: string;
+
+  if (major > 12 || (major === 12 && minor >= 7)) {
+    status = "risk";
+    msg =
+      "RunPod community nodes rarely have this driver. You may get assigned a node that rejects the container — switch to Secure cloud or use a CUDA 12.4 image.";
+  } else if (major === 12 && minor >= 5) {
+    status = "warn";
+    msg =
+      "CUDA 12.5–12.6 nodes are less common on RunPod community cloud. If you hit a mismatch, switch to Secure cloud or a CUDA 12.4 image.";
+  } else {
+    status = "ok";
+    msg = "Driver requirement is widely available on RunPod community and secure nodes.";
+  }
+
+  const rowCls = cn(
+    "rounded-lg border px-4 py-3",
+    status === "ok" && "border-border bg-muted/20",
+    status === "warn" && "border-yellow-500/30 bg-yellow-500/5",
+    status === "risk" && "border-destructive/30 bg-destructive/5",
+  );
+
+  return (
+    <div className={rowCls}>
+      <div className="flex items-start gap-3">
+        {status === "ok" && (
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
+        )}
+        {status === "warn" && (
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-500" />
+        )}
+        {status === "risk" && (
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+        )}
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-0.5 text-sm font-medium">
+            <span>
+              Container CUDA:{" "}
+              <span className="font-mono">{cuda}</span>
+            </span>
+            {minDriver && (
+              <span>
+                Requires driver:{" "}
+                <span className="font-mono">≥ {minDriver}</span>
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">{msg}</p>
+          {status !== "ok" && (
+            <p className="text-xs text-muted-foreground">
+              Unlike RunPod&apos;s own UI (which filters by compatible hosts),{" "}
+              <span className="font-mono">benchmaq</span> uses{" "}
+              <span className="font-mono">runpodctl</span> which does not send{" "}
+              <span className="font-mono">allowedCudaVersions</span> — any
+              available node may be assigned regardless of its driver.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
