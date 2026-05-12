@@ -19,8 +19,13 @@ import type {
   CreateAppResponse,
   CreateBenchmarkRequest,
   CreateComputeRequest,
+  CreateProviderRequest,
   PolicyRole,
+  ProviderRecord,
   SectionKey,
+  TestProviderRequest,
+  TestProviderResponse,
+  VmAvailability,
 } from "./types";
 
 export type GpuAvailability = {
@@ -196,6 +201,26 @@ export const gateway = {
       method: "POST",
       body: JSON.stringify({ reason: reason ?? null }),
     }),
+
+  // ---- Cloud providers ----
+  listProviders: () => request<ProviderRecord[]>("/v1/providers"),
+  createProvider: (body: CreateProviderRequest) =>
+    request<ProviderRecord>("/v1/providers", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteProvider: (id: string) =>
+    request<{ ok: boolean; id: string }>(
+      `/v1/providers/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+  testProvider: (body: TestProviderRequest) =>
+    request<TestProviderResponse>("/v1/providers/test", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getVmAvailability: (id: string) =>
+    request<VmAvailability>(`/v1/providers/${encodeURIComponent(id)}/availability`),
 
   // ---- Admin: users, policy roles, audit ----
   adminListUsers: () => request<AdminUserRecord[]>("/admin/users"),

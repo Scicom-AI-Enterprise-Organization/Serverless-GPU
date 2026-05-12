@@ -91,11 +91,16 @@ export type BenchmarkRecord = {
   started_at?: string | null;
   ended_at?: string | null;
   cost_per_hr?: number | null;
+  provider_id?: string | null;
 };
 
 export type CreateBenchmarkRequest = {
   name: string;
   config_yaml: string;
+  provider_id?: string | null;
+  // VM runs only: rm -rf the model's local_dir + HF hub cache on the VM after
+  // the run exits. Default true on the UI side.
+  cleanup_model?: boolean;
 };
 
 export type BenchmarkFile = {
@@ -197,6 +202,64 @@ export type ComputeSshInfo = {
   ssh_host: string;
   ssh_port: number;
   private_key: string;
+};
+
+// ---- Cloud providers (user-registered VMs / RunPod / PI accounts) ----
+
+export type ProviderKind = "vm";
+
+export type ProviderRecord = {
+  id: string;
+  name: string;
+  kind: ProviderKind;
+  created_at: string;
+  created_by: string;
+  host?: string | null;
+  port?: number | null;
+  user?: string | null;
+  gpus?: string[] | null;
+  gpu_count?: number | null;
+};
+
+export type VmConfigInput = {
+  host: string;
+  port: number;
+  user: string;
+  private_key?: string;
+};
+
+export type CreateProviderRequest = {
+  name: string;
+  kind: ProviderKind;
+  vm?: VmConfigInput;
+};
+
+export type TestProviderRequest = {
+  kind: ProviderKind;
+  vm?: VmConfigInput;
+  provider_id?: string;
+};
+
+export type TestProviderResponse = {
+  ok: boolean;
+  message: string;
+  gpus: string[];
+  gpu_count: number;
+};
+
+export type GpuLiveInfo = {
+  index: number;
+  name: string;
+  mem_free_mib: number;
+  mem_total_mib: number;
+  util_pct: number;
+};
+
+export type VmAvailability = {
+  ok: boolean;
+  message: string;
+  gpus: GpuLiveInfo[];
+  checked_at: number;
 };
 
 // ---- Admin: roles + audit ----

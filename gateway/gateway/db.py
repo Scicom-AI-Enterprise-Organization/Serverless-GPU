@@ -118,6 +118,28 @@ class App(Base):
     owner: Mapped[User] = relationship(back_populates="apps")
 
 
+class Provider(Base):
+    """User-registered cloud provider — VM (bare metal), RunPod, PI.
+
+    `kind` selects the runtime adapter; `config` is a free-form JSON blob whose
+    schema depends on kind. Any secret fields (private_key, api_key) are
+    Fernet-encrypted before being stored here and decrypted on read.
+
+    For phase 1 only `kind == "vm"` is supported. Expected config keys:
+        { "host": str, "port": int, "user": str, "private_key": <encrypted str>,
+          "gpus": [str, ...], "gpu_count": int }   # gpus/gpu_count set by last Test
+    """
+    __tablename__ = "providers"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # "vm" | "runpod" | "pi"
+    config: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class Request(Base):
     __tablename__ = "requests"
     request_id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -259,6 +281,19 @@ async def init_db() -> None:
         await conn.execute(text(
             "ALTER TABLE benchmarks ADD COLUMN IF NOT EXISTS runpod_pod_id VARCHAR(64)"
         ))
+        # Per-benchmark provider selection: NULL = platform default cloud.
+        await conn.execute(text(
+            "ALTER TABLE benchmarks ADD COLUMN IF NOT EXISTS provider_id VARCHAR(64)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_benchmarks_provider_id ON benchmarks(provider_id)"
+        ))
+        # VM cleanup flag — only honoured when provider_id is set.
+        await conn.execute(text(
+            "ALTER TABLE benchmarks ADD COLUMN IF NOT EXISTS cleanup_model BOOLEAN NOT NULL DEFAULT TRUE"
+        ))
+        # Providers table is created by Base.metadata.create_all above; nothing
+        # to migrate yet since it landed on a fresh schema.
 
 
 async def seed_admin_user() -> None:

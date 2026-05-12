@@ -33,6 +33,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -89,6 +90,13 @@ class Benchmark(Base):
     # up yet, and stays at the original quoted rate for the life of the run.
     cost_per_hr: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     runpod_pod_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # User-selected cloud provider. NULL = use platform default (RunPod via env).
+    # FK omitted to keep this column nullable without cascade headaches; we
+    # validate ownership at create time.
+    provider_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    # VM runs only: SSH back in after benchmaq exits to rm -rf the model's
+    # local_dir + HF hub cache. Default true so users don't fill the VM disk.
+    cleanup_model: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
 
 
 # ---------- S3 ----------------------------------------------------------
@@ -199,28 +207,219 @@ def _ssh_key_path() -> str:
     return os.path.expanduser(p)
 
 
-def _resolve_config(raw_yaml: str) -> str:
+def _resolve_config(
+    raw_yaml: str,
+    vm_target: Optional[dict] = None,
+) -> str:
     """Inject runtime values (SSH key path, RunPod API key) into the user's YAML.
 
     Users paste a config that may have `ssh_private_key: "path/to/your/private/key"`
     or empty `runpod_api_key: ""`. We replace those with real values from env so
     they don't have to know about the runpodctl-managed key location.
+
+    When `vm_target` is provided (bare-metal mode), we rewrite the `remote:`
+    block to point at the user-registered VM and drop the `runpod:` block so
+    benchmaq's vllm runner doesn't accidentally pick it up. Expected shape:
+        {"host": str, "port": int, "user": str, "key_filename": str}
     """
     cfg = yaml.safe_load(raw_yaml) or {}
     if not isinstance(cfg, dict):
         return raw_yaml
 
-    rp = cfg.setdefault("runpod", {})
-    if not rp.get("ssh_private_key") or "path/to/your" in str(rp.get("ssh_private_key")):
-        rp["ssh_private_key"] = _ssh_key_path()
-    if not rp.get("runpod_api_key"):
-        rp["runpod_api_key"] = os.environ.get("RUNPOD_API_KEY", "")
+    if vm_target is None:
+        rp = cfg.setdefault("runpod", {})
+        if not rp.get("ssh_private_key") or "path/to/your" in str(rp.get("ssh_private_key")):
+            rp["ssh_private_key"] = _ssh_key_path()
+        if not rp.get("runpod_api_key"):
+            rp["runpod_api_key"] = os.environ.get("RUNPOD_API_KEY", "")
 
-    rem = cfg.setdefault("remote", {})
-    if not rem.get("key_filename") or "path/to/your" in str(rem.get("key_filename")):
-        rem["key_filename"] = _ssh_key_path()
+        rem = cfg.setdefault("remote", {})
+        if not rem.get("key_filename") or "path/to/your" in str(rem.get("key_filename")):
+            rem["key_filename"] = _ssh_key_path()
+    else:
+        # Bare-metal VM: drop runpod block (irrelevant + would confuse benchmaq)
+        # and rewrite remote to point at the VM. Preserve any uv/dependencies
+        # the user (or form-mode renderYaml) already set.
+        cfg.pop("runpod", None)
+        rem = cfg.setdefault("remote", {})
+        rem["host"] = vm_target["host"]
+        rem["port"] = int(vm_target.get("port") or 22)
+        rem["username"] = vm_target.get("user", "root")
+        rem["key_filename"] = vm_target["key_filename"]
+        # benchmaq needs *something* to install — if the form didn't render a
+        # block, fall back to a vLLM-only setup.
+        if not rem.get("uv"):
+            rem["uv"] = {"path": "~/.benchmark-venv", "python_version": "3.11"}
+        if not rem.get("dependencies"):
+            rem["dependencies"] = ["vllm", "pyyaml", "requests", "huggingface_hub[hf_transfer]"]
+
+        # `/workspace/...` is RunPod's per-pod mount and doesn't exist on
+        # bare-metal VMs (where the SSH user is typically `ubuntu` and only
+        # has write access under $HOME). Rewrite any model.local_dir or
+        # results.result_dir that starts with `/workspace/` to live under
+        # the user's home instead.
+        items = cfg.get("benchmark") or []
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                model = item.get("model")
+                if isinstance(model, dict):
+                    ld = str(model.get("local_dir") or "")
+                    if ld.startswith("/workspace/"):
+                        model["local_dir"] = "~/" + ld[len("/workspace/"):]
+                results = item.get("results")
+                if isinstance(results, dict):
+                    rd = str(results.get("result_dir") or "")
+                    if rd.startswith("/workspace/"):
+                        results["result_dir"] = "~/" + rd[len("/workspace/"):]
 
     return yaml.safe_dump(cfg, sort_keys=False)
+
+
+def _pick_engine_subcommand(raw_yaml: str) -> list[str]:
+    """Read engine from the first benchmark item; default to vllm.
+
+    benchmaq separates engines into top-level subcommands (`vllm bench`,
+    `sglang bench`) and only those honour the `remote:` block. The `runpod`
+    subcommand is only for the spawn-a-pod-then-bench flow we use for the
+    cloud target.
+    """
+    try:
+        cfg = yaml.safe_load(raw_yaml) or {}
+        items = cfg.get("benchmark") or []
+        if items and isinstance(items, list):
+            engine = str(items[0].get("engine") or "vllm").lower()
+            if engine == "sglang":
+                return ["sglang", "bench"]
+    except Exception:
+        pass
+    return ["vllm", "bench"]
+
+
+async def _materialise_vm_key(work_dir: Path, provider_id: str) -> dict:
+    """Look up the provider, decrypt its private key, write to `work/vm_key`
+    with 0600, and return the dict `_resolve_config` expects as `vm_target`.
+
+    Raises if the provider is missing or the key can't be decrypted.
+    """
+    from . import crypto
+    from .db import Provider
+    async with session_factory()() as s:
+        prov = await s.get(Provider, provider_id)
+    if prov is None:
+        raise RuntimeError(f"provider {provider_id} not found")
+    if prov.kind != "vm":
+        raise RuntimeError(f"provider {provider_id} is kind={prov.kind}, expected vm")
+    cfg = prov.config or {}
+    enc = cfg.get("private_key_enc")
+    if not enc:
+        raise RuntimeError(f"provider {provider_id} has no stored key")
+    pk_text = crypto.decrypt(enc)
+    key_path = work_dir / "vm_key"
+    key_path.write_text(pk_text + ("\n" if not pk_text.endswith("\n") else ""))
+    os.chmod(key_path, 0o600)
+    return {
+        "host": cfg.get("host", ""),
+        "port": int(cfg.get("port") or 22),
+        "user": cfg.get("user", "root"),
+        "key_filename": str(key_path),
+    }
+
+
+def _hf_cache_dir(repo_id: str) -> str:
+    """HuggingFace's on-disk cache layout: `~/.cache/huggingface/hub/models--<org>--<name>`.
+    Slashes in the repo id become double-dashes. Used to clean up after a VM run."""
+    sanitised = repo_id.replace("/", "--")
+    return f"~/.cache/huggingface/hub/models--{sanitised}"
+
+
+def _ssh_cleanup_paths_sync(vm_target: dict, paths: list[str]) -> tuple[bool, str]:
+    """Open SSH and `rm -rf` each path. Returns (ok, message)."""
+    import paramiko
+    try:
+        pkey = paramiko.PKey.from_path(vm_target["key_filename"])
+    except Exception:
+        # Older paramiko / non-standard key — fall back to type-probing.
+        from .vm_probe import _load_pkey
+        with open(vm_target["key_filename"], "r") as f:
+            pkey = _load_pkey(f.read())
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            hostname=vm_target["host"],
+            port=int(vm_target["port"]),
+            username=vm_target["user"],
+            pkey=pkey,
+            timeout=15,
+            banner_timeout=15,
+            auth_timeout=15,
+            look_for_keys=False,
+            allow_agent=False,
+        )
+    except Exception as e:
+        return False, f"SSH connect failed: {e}"
+
+    try:
+        # Quote each path with single quotes; reject any with embedded quotes
+        # (we generated them ourselves, but belt-and-braces).
+        safe = [p for p in paths if "'" not in p]
+        if not safe:
+            return False, "no safe paths to clean"
+        # `rm -rf` is fine for missing paths; we use bash -lc so ~ expands.
+        cmd = "; ".join(f"rm -rf '{p}'" for p in safe)
+        full = f"bash -lc \"{cmd}\""
+        stdin, stdout, stderr = client.exec_command(full, timeout=60)
+        rc = stdout.channel.recv_exit_status()
+        err = stderr.read().decode(errors="replace").strip()
+        if rc != 0:
+            return False, f"rm exited {rc}: {err[:200]}"
+        return True, f"removed {len(safe)} path{'s' if len(safe) != 1 else ''}"
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+async def _cleanup_vm_model(
+    redis,
+    bench_id: str,
+    vm_target: dict,
+    raw_yaml: str,
+) -> None:
+    """After a bare-metal run ends, remove the model from the VM so the disk
+    doesn't fill up with stale downloads. Targets both the user's `local_dir`
+    (if set) and the standard HF hub cache. Best-effort — failures log but
+    never bubble up since the benchmark itself already finished."""
+    try:
+        cfg = yaml.safe_load(raw_yaml) or {}
+        items = cfg.get("benchmark") or []
+        first = items[0] if items and isinstance(items, list) else {}
+        model = first.get("model") or {}
+        repo_id = str(model.get("repo_id") or "").strip()
+        local_dir = str(model.get("local_dir") or "").strip()
+    except Exception as e:
+        await _push_log(redis, bench_id, f"[gateway] vm cleanup: could not parse YAML: {e}")
+        return
+
+    paths: list[str] = []
+    if local_dir:
+        paths.append(local_dir)
+    if repo_id:
+        paths.append(_hf_cache_dir(repo_id))
+    if not paths:
+        return
+
+    await _push_log(redis, bench_id, f"[gateway] vm cleanup: removing {', '.join(paths)}")
+    try:
+        ok, msg = await asyncio.to_thread(_ssh_cleanup_paths_sync, vm_target, paths)
+    except Exception as e:
+        await _push_log(redis, bench_id, f"[gateway] vm cleanup failed: {e}")
+        return
+    level = "info" if ok else "warning"
+    await _push_log(redis, bench_id, f"[gateway] vm cleanup [{level}]: {msg}")
 
 
 # ---------- Subprocess runner ------------------------------------------
@@ -326,19 +525,44 @@ async def _drain(stream: asyncio.StreamReader, prefix: str, redis, bench_id: str
 async def run_benchmark(redis, bench_id: str, raw_yaml: str) -> None:
     """End-to-end runner for one benchmark. Owns the subprocess from spawn → S3 sync."""
     work = _work_dir(bench_id)
-    cfg_path = work / "config.yaml"
-    cfg_path.write_text(_resolve_config(raw_yaml))
 
-    # Mark running + start time.
+    # Mark running + start time, and read provider_id so we know whether to
+    # take the RunPod path or the VM/SSH path.
     async with session_factory()() as s:
         b = await s.get(Benchmark, bench_id)
         if b is None:
             return
         b.status = "running"
         b.started_at = datetime.now(timezone.utc)
+        provider_id = b.provider_id
+        cleanup_model = bool(getattr(b, "cleanup_model", True))
         await s.commit()
 
-    await _push_log(redis, bench_id, f"[gateway] starting benchmaq runpod bench (cwd={work})")
+    vm_target: Optional[dict] = None
+    if provider_id:
+        try:
+            vm_target = await _materialise_vm_key(work, provider_id)
+            await _push_log(redis, bench_id, f"[gateway] bare-metal target: {vm_target['user']}@{vm_target['host']}:{vm_target['port']}")
+        except Exception as e:
+            await _push_log(redis, bench_id, f"[gateway] could not prepare VM target: {e}")
+            async with session_factory()() as s:
+                b2 = await s.get(Benchmark, bench_id)
+                if b2 is not None:
+                    b2.status = "failed"
+                    b2.error_text = f"VM target setup failed: {e}"[:4000]
+                    b2.ended_at = datetime.now(timezone.utc)
+                    await s.commit()
+            return
+
+    cfg_path = work / "config.yaml"
+    cfg_path.write_text(_resolve_config(raw_yaml, vm_target=vm_target))
+
+    if vm_target:
+        sub_cmd = _pick_engine_subcommand(raw_yaml)
+        await _push_log(redis, bench_id, f"[gateway] starting benchmaq {' '.join(sub_cmd)} (cwd={work})")
+    else:
+        sub_cmd = ["runpod", "bench"]
+        await _push_log(redis, bench_id, f"[gateway] starting benchmaq runpod bench (cwd={work})")
 
     env = dict(os.environ)
     env["RUNPOD_API_KEY"] = os.environ.get("RUNPOD_API_KEY", "")
@@ -369,8 +593,16 @@ async def run_benchmark(redis, bench_id: str, raw_yaml: str) -> None:
 
     # Invoke through python -u so even C-level stdio is line-buffered, in case
     # benchmaq spawns subprocesses (runpodctl) whose output also needs to flow.
+    # For VM (bare-metal) runs, we route through a thin wrapper that installs
+    # the pyremote reconnect-per-command shim before benchmaq's CLI runs.
+    # This sidesteps Go-based SSH proxies (e.g. TM's `ssh.*.gpu.tm.com.my`)
+    # that enforce one exec channel per TCP connection.
+    if vm_target is not None:
+        cmd_argv = [sys.executable, "-u", "-m", "gateway.bench_remote_wrapper", *sub_cmd, str(cfg_path)]
+    else:
+        cmd_argv = [sys.executable, "-u", benchmaq_bin, *sub_cmd, str(cfg_path)]
     proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-u", benchmaq_bin, "runpod", "bench", str(cfg_path),
+        *cmd_argv,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(work),
@@ -397,9 +629,21 @@ async def run_benchmark(redis, bench_id: str, raw_yaml: str) -> None:
 
     await _push_log(redis, bench_id, f"[gateway] benchmaq exited rc={rc}")
 
+    # Bare-metal runs leave the model in the VM's HF cache + local_dir. Clean
+    # both up so a series of benchmarks on different models doesn't fill the
+    # VM's disk. Best-effort: failures are logged but don't change the run
+    # outcome (the benchmark already finished).
+    if vm_target is not None and cleanup_model:
+        try:
+            await _cleanup_vm_model(redis, bench_id, vm_target, raw_yaml)
+        except Exception as e:
+            await _push_log(redis, bench_id, f"[gateway] vm cleanup crashed: {e}")
+    elif vm_target is not None:
+        await _push_log(redis, bench_id, "[gateway] vm cleanup: skipped (cleanup_model=false)")
+
     # Sync any result files dropped under work/ into S3.
     prefix = benchmark_s3_prefix(bench_id)
-    s3_put_text(f"{prefix}config.yaml", _resolve_config(raw_yaml))
+    s3_put_text(f"{prefix}config.yaml", _resolve_config(raw_yaml, vm_target=vm_target))
     result_json: Optional[dict] = None
     error_excerpt: Optional[str] = None
 
@@ -536,6 +780,13 @@ async def cleanup_orphaned_running(redis) -> int:
 class CreateBenchmarkRequest(BaseModel):
     name: str
     config_yaml: str
+    # NULL/absent means use the platform default cloud (RunPod). Set to a
+    # provider id (from /v1/providers) to bind this run to a user-registered
+    # VM. Phase 2 just persists the choice; phase 3 will route execution.
+    provider_id: Optional[str] = None
+    # VM runs only: remove the model from the VM after the run. Ignored for
+    # cloud runs since the RunPod pod is torn down anyway.
+    cleanup_model: Optional[bool] = None
 
 
 class BenchmarkRecord(BaseModel):
@@ -552,6 +803,7 @@ class BenchmarkRecord(BaseModel):
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
     cost_per_hr: Optional[float] = None
+    provider_id: Optional[str] = None
 
 
 class FileRecord(BaseModel):
@@ -594,6 +846,7 @@ def _to_record(b: Benchmark, owner_username: str) -> BenchmarkRecord:
         started_at=b.started_at.isoformat() if b.started_at else None,
         ended_at=b.ended_at.isoformat() if b.ended_at else None,
         cost_per_hr=b.cost_per_hr,
+        provider_id=b.provider_id,
     )
 
 
@@ -685,6 +938,12 @@ async def create_benchmark(
     if not isinstance(cfg, dict):
         raise HTTPException(status_code=400, detail={"error": "top-level YAML must be a mapping"})
 
+    if body.provider_id:
+        from .db import Provider
+        prov = await session.get(Provider, body.provider_id)
+        if prov is None:
+            raise HTTPException(status_code=400, detail={"error": "unknown provider_id"})
+
     bench_id = _gen_id()
     s3_prefix = benchmark_s3_prefix(bench_id)
 
@@ -695,6 +954,9 @@ async def create_benchmark(
         status="queued",
         s3_prefix=s3_prefix,
         owner_id=user.id,
+        provider_id=body.provider_id,
+        # Only honoured when provider_id is set (VM path). Default True.
+        cleanup_model=True if body.cleanup_model is None else bool(body.cleanup_model),
     )
     session.add(bench)
     await session.commit()

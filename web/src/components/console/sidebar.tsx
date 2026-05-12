@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Box, Boxes, CheckSquare, FlaskConical, KeyRound, Lock, Plus, ScrollText, Server, Settings, Shield, Sparkles, Users } from "lucide-react";
+import { Box, Boxes, CheckSquare, Cloud, FlaskConical, KeyRound, Lock, Plus, ScrollText, Server, Settings, Shield, Sparkles, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSidebarState } from "./sidebar-state";
 
@@ -39,6 +39,7 @@ const ACCOUNT: Item[] = [
 const ADMIN: Item[] = [
   { label: "Organization", href: "/organization", icon: Users },
   { label: "Roles", href: "/admin/roles", icon: Shield },
+  { label: "GPU Providers", href: "/providers", icon: Cloud, quickAction: { href: "/providers/new", label: "New provider" } },
   { label: "Audit log", href: "/admin/audit", icon: ScrollText },
 ];
 const MANAGE: Item[] = [
@@ -77,6 +78,9 @@ export function ConsoleSidebar({
     }
     if (href === "/compute") {
       return pathname === "/compute" || pathname.startsWith("/compute/");
+    }
+    if (href === "/providers") {
+      return pathname === "/providers" || pathname.startsWith("/providers/");
     }
     return pathname === href;
   };

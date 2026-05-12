@@ -20,6 +20,8 @@ dependencies = [
     "bcrypt>=4.1",
     "boto3>=1.34",
     "pyyaml>=6.0",
+    "cryptography>=42",
+    "paramiko>=3.4",
     # llm-benchmaq is the CLI we shell out to for benchmark runs. Public repo;
     # pulls in paramiko/scp/etc.
     "benchmaq @ git+https://github.com/Scicom-AI-Enterprise-Organization/llm-benchmaq.git@306ebcc",

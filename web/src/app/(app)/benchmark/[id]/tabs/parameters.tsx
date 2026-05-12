@@ -43,6 +43,10 @@ type Parsed = {
     env?: Record<string, unknown>;
   };
   remote?: {
+    host?: string;
+    port?: number;
+    username?: string;
+    key_filename?: string;
     uv?: { path?: string; python_version?: string };
     dependencies?: string[];
   };
@@ -111,37 +115,57 @@ export function ParametersTab({ bench }: { bench: BenchmarkRecord }) {
         </p>
       </div>
 
-      <ParamsCard
-        icon={<Server className="h-4 w-4" />}
-        title="Pod"
-        description="What benchmaq spawned on RunPod."
-      >
-        <KvGrid>
-          <Kv label="GPU type" value={pod.gpu_type} mono />
-          <Kv label="GPU count" value={pod.gpu_count} />
-          <Kv
-            label="Cloud"
-            value={pod.secure_cloud ? "Secure" : "Community"}
-          />
-          <Kv label="Disk" value={container.disk_size ? `${container.disk_size} GB` : undefined} />
-          <Kv label="Volume" value={storage.volume_size ? `${storage.volume_size} GB` : undefined} />
-          <Kv label="Pod name" value={pod.name} mono />
-        </KvGrid>
-        <Detail label="Container image">
-          <code className="font-mono text-xs">{container.image ?? "—"}</code>
-        </Detail>
-        {Object.keys(env).length > 0 && (
-          <Detail label="Pod env">
-            <div className="flex flex-wrap gap-1">
-              {Object.entries(env).map(([k, v]) => (
-                <Badge key={k} variant="secondary" className="font-mono text-[10px]">
-                  {k}={String(v)}
-                </Badge>
-              ))}
-            </div>
+      {bench.provider_id ? (
+        <ParamsCard
+          icon={<Server className="h-4 w-4" />}
+          title="Pod (bare metal)"
+          description="benchmaq ran directly on a registered VM via SSH — no pod was spawned."
+          action={
+            <Badge variant="secondary" className="font-mono text-[10px]">
+              VM
+            </Badge>
+          }
+        >
+          <KvGrid>
+            <Kv label="Provider" value={bench.provider_id} mono wide />
+            <Kv label="Host" value={parsed.remote?.host} mono wide />
+            <Kv label="SSH user" value={parsed.remote?.username} mono />
+            <Kv label="SSH port" value={parsed.remote?.port} />
+          </KvGrid>
+        </ParamsCard>
+      ) : (
+        <ParamsCard
+          icon={<Server className="h-4 w-4" />}
+          title="Pod"
+          description="What benchmaq spawned on RunPod."
+        >
+          <KvGrid>
+            <Kv label="GPU type" value={pod.gpu_type} mono />
+            <Kv label="GPU count" value={pod.gpu_count} />
+            <Kv
+              label="Cloud"
+              value={pod.secure_cloud ? "Secure" : "Community"}
+            />
+            <Kv label="Disk" value={container.disk_size ? `${container.disk_size} GB` : undefined} />
+            <Kv label="Volume" value={storage.volume_size ? `${storage.volume_size} GB` : undefined} />
+            <Kv label="Pod name" value={pod.name} mono />
+          </KvGrid>
+          <Detail label="Container image">
+            <code className="font-mono text-xs">{container.image ?? "—"}</code>
           </Detail>
-        )}
-      </ParamsCard>
+          {Object.keys(env).length > 0 && (
+            <Detail label="Pod env">
+              <div className="flex flex-wrap gap-1">
+                {Object.entries(env).map(([k, v]) => (
+                  <Badge key={k} variant="secondary" className="font-mono text-[10px]">
+                    {k}={String(v)}
+                  </Badge>
+                ))}
+              </div>
+            </Detail>
+          )}
+        </ParamsCard>
+      )}
 
       <ParamsCard
         icon={<Cpu className="h-4 w-4" />}

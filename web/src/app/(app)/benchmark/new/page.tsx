@@ -17,18 +17,20 @@ export default async function NewBenchmarkPage({
 
   let initialName: string | undefined;
   let initialYaml: string | undefined;
+  let initialProviderId: string | null | undefined;
   if (from && !noAccess) {
     try {
       const src = await gateway.getBenchmark(from);
       initialName = `${src.name}-copy`;
       initialYaml = src.config_yaml;
+      initialProviderId = src.provider_id ?? null;
     } catch {
       // ignore — fall back to default empty form
     }
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <>
       <ConsoleTopbar
         crumbs={[
           { label: "Benchmark", href: "/benchmark" },
@@ -36,13 +38,17 @@ export default async function NewBenchmarkPage({
         ]}
         username={username}
       />
-      <div className="flex-1 overflow-y-auto px-6 py-6 lg:px-10 lg:py-8 scrollbar-thin">
+      <div className="px-6 py-6 lg:px-10 lg:py-8">
         {noAccess ? (
           <NoAccessAlert />
         ) : (
-          <BenchmarkForm initialName={initialName} initialYaml={initialYaml} />
+          <BenchmarkForm
+            initialName={initialName}
+            initialYaml={initialYaml}
+            initialProviderId={initialProviderId}
+          />
         )}
       </div>
-    </div>
+    </>
   );
 }

@@ -36,6 +36,7 @@ from .db import App, AuditLog, PolicyRole, Request as ReqRow, User, get_session,
 from . import audit as audit_module
 from . import bench as bench_module
 from . import compute as compute_module
+from . import providers_api as providers_module
 
 logger = logging.getLogger("gateway")
 
@@ -364,6 +365,7 @@ app = FastAPI(
 )
 app.include_router(bench_module.router)
 app.include_router(compute_module.router)
+app.include_router(providers_module.router)
 
 
 @app.middleware("http")

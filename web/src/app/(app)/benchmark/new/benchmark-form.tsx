@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import yaml from "js-yaml";
 import {
+  AlertCircle,
   AlertTriangle,
   Bookmark,
   Box,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -17,10 +19,12 @@ import {
   Info,
   Loader2,
   Package,
+  RefreshCw,
   Server,
   ShieldAlert,
   Sparkles,
   Trash2,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -60,7 +64,7 @@ import {
 import { AvailabilityBadge } from "@/components/availability-badge";
 import { useGpuAvailability } from "@/lib/use-gpu-availability";
 import { gateway } from "@/lib/gateway";
-import type { BenchmarkTemplate } from "@/lib/types";
+import type { BenchmarkTemplate, ProviderRecord, VmAvailability } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const GPU_OPTIONS = [
@@ -137,6 +141,8 @@ type FormState = {
   max_model_len: string;
   gpu_memory_utilization: string;
   max_num_seqs: string;
+  // vLLM HTTP port. Empty = default (8000).
+  port: string;
   dtype: "auto" | "bfloat16" | "float16" | "float32";
   vllm_version: string;
   // Cmdline-style flags appended to vLLM. Parsed into snake_case serve: keys
@@ -154,6 +160,10 @@ type FormState = {
   input_lens_csv: string;
   concurrencies_csv: string;
   hf_home: string;
+  // Bare-metal only: base directory on the VM where model weights + results
+  // get written. RunPod mounts /workspace; on a bare-metal VM the default is
+  // `~` (the SSH user's home).
+  vm_base_dir: string;
 };
 
 const DEFAULTS: FormState = {
@@ -169,6 +179,7 @@ const DEFAULTS: FormState = {
   max_model_len: "",
   gpu_memory_utilization: "",
   max_num_seqs: "",
+  port: "",
   dtype: "auto",
   vllm_version: "0.15.0",
   // Benchmark-default extras: prefix caching off (so cache hits don't skew
@@ -184,6 +195,7 @@ const DEFAULTS: FormState = {
   input_lens_csv: "128, 512, 1024, 2048",
   concurrencies_csv: "10, 25, 50, 200",
   hf_home: "/workspace/hf_home",
+  vm_base_dir: "~",
 };
 
 function parseCsvInts(s: string): number[] {
@@ -195,10 +207,14 @@ function parseCsvInts(s: string): number[] {
     .filter((n) => Number.isFinite(n) && n > 0);
 }
 
-function modelToLocalDir(repo: string): string {
+function modelSlug(repo: string): string {
   const tail = repo.split("/").pop() || "model";
-  const slug = tail.toLowerCase().replace(/\./g, "p").replace(/[^a-z0-9-]/g, "-");
-  return `/workspace/models/${slug}`;
+  return tail.toLowerCase().replace(/\./g, "p").replace(/[^a-z0-9-]/g, "-");
+}
+
+function modelToLocalDir(repo: string, baseDir = "/workspace"): string {
+  const base = (baseDir || "/workspace").replace(/\/+$/, "");
+  return `${base}/models/${modelSlug(repo)}`;
 }
 
 function renderBenchEntries(s: FormState): string {
@@ -268,6 +284,7 @@ function renderServeBlock(s: FormState): string {
   setIfNum("max_model_len", s.max_model_len);
   setIfNum("gpu_memory_utilization", s.gpu_memory_utilization);
   setIfNum("max_num_seqs", s.max_num_seqs);
+  setIfNum("port", s.port);
   if (s.dtype !== "auto") merged["dtype"] = s.dtype;
 
   Object.assign(merged, parseExtraArgs(s.extra_args_raw));
@@ -285,8 +302,13 @@ function totalRuns(s: FormState): number {
   return Math.max(1, inputs.length) * Math.max(1, concs.length);
 }
 
-function renderYaml(s: FormState): string {
-  return `runpod:
+function renderYaml(s: FormState, target: "cloud" | "vm" = "cloud"): string {
+  // RunPod / pod / container blocks only apply when we're provisioning a
+  // fresh pod. On a registered VM the hardware is fixed and the gateway
+  // injects host/port/username/key_filename into `remote:` at runtime — so
+  // we render an empty placeholder block here purely for the preview.
+  const runpodBlock = target === "cloud"
+    ? `runpod:
   ssh_private_key: ""
   runpod_api_key: ""
   pod:
@@ -307,7 +329,11 @@ function renderYaml(s: FormState): string {
   env:
     HF_HOME: "${s.hf_home}"
 
-remote:
+`
+    : "";
+
+  const remoteBlock = target === "cloud"
+    ? `remote:
   key_filename: ""
   uv:
     path: ~/.venv
@@ -316,13 +342,26 @@ remote:
     - vllm==${s.vllm_version || "0.15.0"}
     - huggingface_hub
     - hf_transfer
+`
+    : `# host/port/username/key_filename are injected by the gateway from
+# the selected VM provider at run time.
+remote:
+  uv:
+    path: ~/.benchmark-venv
+    python_version: "3.11"
+  dependencies:
+    - vllm==${s.vllm_version || "0.15.0"}
+    - huggingface_hub
+    - hf_transfer
+`;
 
+  return `${runpodBlock}${remoteBlock}
 benchmark:
   - name: ${s.benchName}
     engine: vllm
     model:
       repo_id: "${s.model_repo_id}"
-      local_dir: "${modelToLocalDir(s.model_repo_id)}"
+      local_dir: "${modelToLocalDir(s.model_repo_id, target === "vm" ? s.vm_base_dir : "/workspace")}"
     serve:
 ${renderServeBlock(s)}
     bench:
@@ -341,6 +380,7 @@ const FORM_SERVE_KEYS = new Set([
   "max_model_len",
   "gpu_memory_utilization",
   "max_num_seqs",
+  "port",
   "dtype",
 ]);
 const FORM_DTYPES = new Set<FormState["dtype"]>([
@@ -507,9 +547,13 @@ function parseYamlToForm(src: string, fallback: FormState): ParseYamlResult {
 export function BenchmarkForm({
   initialName,
   initialYaml,
+  initialProviderId,
 }: {
   initialName?: string;
   initialYaml?: string;
+  /** When duplicating a benchmark, carry over the source's provider choice
+   * so the "Run on" tile + VM provider dropdown reflect the original. */
+  initialProviderId?: string | null;
 } = {}) {
   const router = useRouter();
   // Duplicate flow: start in YAML mode with the source config pre-filled so
@@ -528,9 +572,51 @@ export function BenchmarkForm({
     form.secure_cloud ? "SECURE" : "COMMUNITY",
   );
   const [yamlBuf, setYamlBuf] = useState<string>(initialYaml ?? renderYaml(DEFAULTS));
+
+  // Provider selection — "cloud" means platform default (RunPod), "vm" routes
+  // execution to a user-registered VM via the GPU Providers page. Declared
+  // before formYaml so renderYaml picks up the choice in the preview.
+  const [providers, setProviders] = useState<ProviderRecord[]>([]);
+  // Source-of-truth: if duplicating from a bench that ran on a VM, start in
+  // "vm" mode with that provider preselected; otherwise default to cloud.
+  const [target, setTarget] = useState<"cloud" | "vm">(
+    initialProviderId ? "vm" : "cloud",
+  );
+  const [providerId, setProviderId] = useState<string>(initialProviderId ?? "");
+  const [cleanupModel, setCleanupModel] = useState(true);
+
+  // Live SSH probe of the selected VM. Re-fires when the user changes the
+  // provider, and when they hit the refresh button.
+  type VmAvailState =
+    | { status: "idle" }
+    | { status: "loading" }
+    | { status: "ok"; data: VmAvailability }
+    | { status: "error"; message: string };
+  const [vmAvail, setVmAvail] = useState<VmAvailState>({ status: "idle" });
+  const refreshVmAvail = useCallback(async (id: string) => {
+    if (!id) {
+      setVmAvail({ status: "idle" });
+      return;
+    }
+    setVmAvail({ status: "loading" });
+    try {
+      const data = await gateway.getVmAvailability(id);
+      setVmAvail({ status: "ok", data });
+    } catch (e) {
+      setVmAvail({
+        status: "error",
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }, []);
+  useEffect(() => {
+    if (target === "vm" && providerId) refreshVmAvail(providerId);
+    else setVmAvail({ status: "idle" });
+  }, [target, providerId, refreshVmAvail]);
+
   const formYaml = useMemo(
-    () => renderYaml({ ...form, benchName: name || "untitled" }),
-    [form, name],
+    () => renderYaml({ ...form, benchName: name || "untitled" }, target),
+    [form, name, target],
   );
 
   const [templates, setTemplates] = useState<BenchmarkTemplate[]>([]);
@@ -540,6 +626,7 @@ export function BenchmarkForm({
 
   useEffect(() => {
     gateway.listBenchmarkTemplates().then(setTemplates).catch(() => {});
+    gateway.listProviders().then(setProviders).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -596,11 +683,17 @@ export function BenchmarkForm({
       return;
     }
     const config_yaml = mode === "form" ? formYaml : yamlBuf;
+    if (target === "vm" && !providerId) {
+      setSubmitError("Pick a VM provider, or switch back to Default cloud.");
+      return;
+    }
     setSubmitting(true);
     try {
       const created = await gateway.createBenchmark({
         name: name.trim(),
         config_yaml,
+        provider_id: target === "vm" ? providerId : null,
+        cleanup_model: target === "vm" ? cleanupModel : undefined,
       });
       toast.success(`Created ${created.id}`, { duration: 4000 });
       router.push(`/benchmark/${encodeURIComponent(created.id)}`);
@@ -717,6 +810,7 @@ export function BenchmarkForm({
 
       {/* Form / YAML toggle */}
       <Tabs
+        className="!block"
         value={mode}
         onValueChange={(v) => {
           const next = v as "form" | "yaml";
@@ -759,19 +853,151 @@ export function BenchmarkForm({
           </span>
         </div>
 
-        <TabsContent value="form" className="mt-4 space-y-6">
-          {/* Pod */}
+        <TabsContent value="form" className="mt-4 space-y-6 !flex-none">
+          {/* Where to run — platform cloud (RunPod) or one of the user's
+              registered VMs (GPU Providers page). Sits at the top of the
+              Form tab so users pick target before configuring everything else. */}
+          <SectionCard
+            icon={<Server className="h-4 w-4" />}
+            title="Run on"
+            description="Default cloud spawns a fresh RunPod pod per run. Bare metal uses a VM you've registered under GPU Providers."
+          >
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => setTarget("cloud")}
+                className={cn(
+                  "flex items-start gap-3 rounded-md border px-3 py-2.5 text-left text-sm transition-colors",
+                  target === "cloud"
+                    ? "border-primary/60 bg-primary/5"
+                    : "border-border hover:border-primary/40 hover:bg-muted/40",
+                )}
+              >
+                <Cpu className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0">
+                  <div className="font-medium">Default cloud (RunPod)</div>
+                  <div className="text-xs text-muted-foreground">
+                    Provision a fresh pod on demand. Pay-per-second.
+                  </div>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTarget("vm")}
+                className={cn(
+                  "flex items-start gap-3 rounded-md border px-3 py-2.5 text-left text-sm transition-colors",
+                  target === "vm"
+                    ? "border-primary/60 bg-primary/5"
+                    : "border-border hover:border-primary/40 hover:bg-muted/40",
+                )}
+              >
+                <Server className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0">
+                  <div className="font-medium">Bare metal (VM)</div>
+                  <div className="text-xs text-muted-foreground">
+                    SSH onto a registered VM. No spin-up cost.
+                  </div>
+                </div>
+              </button>
+            </div>
+          </SectionCard>
+
+          {/* Pod — when cloud, shows GPU/disk knobs for the fresh RunPod pod.
+              When bare-metal, swaps to a VM picker + cleanup toggle. Same
+              section so the layout stays consistent regardless of target. */}
           <SectionCard
             icon={<Server className="h-4 w-4" />}
             title="Pod"
-            description="GPU and disk for the RunPod instance benchmaq spawns."
+            description={
+              target === "cloud"
+                ? "GPU and disk for the RunPod instance benchmaq spawns."
+                : "Which registered VM benchmaq should SSH into. Hardware is fixed by the VM."
+            }
             action={
-              <AvailabilityBadge
-                state={availability}
-                count={form.gpu_count}
-              />
+              target === "cloud" ? (
+                <AvailabilityBadge
+                  state={availability}
+                  count={form.gpu_count}
+                />
+              ) : undefined
             }
           >
+          {target === "vm" && (
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="bench-provider" className="text-xs">VM provider</Label>
+                {providers.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No VM providers registered. Add one at{" "}
+                    <a href="/providers/new" className="underline underline-offset-2 hover:text-foreground">
+                      GPU Providers → New provider
+                    </a>
+                    .
+                  </p>
+                ) : (
+                  <Select value={providerId} onValueChange={setProviderId}>
+                    <SelectTrigger id="bench-provider">
+                      <SelectValue placeholder="Pick a VM…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {providers
+                        .filter((p) => p.kind === "vm")
+                        .map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            {p.name}
+                            {p.gpu_count != null && p.gpu_count > 0 ? ` · ${p.gpu_count} GPU` : ""}
+                            {p.host ? ` · ${p.host}` : ""}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  benchmaq runs directly on the VM via SSH. The VM&apos;s GPUs,
+                  disk, and Python environment are used as-is.
+                </p>
+                {providerId && <VmAvailabilityRow state={vmAvail} onRefresh={() => refreshVmAvail(providerId)} />}
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="bench-vm-base" className="text-xs">Working directory on VM</Label>
+                <Input
+                  id="bench-vm-base"
+                  value={form.vm_base_dir}
+                  onChange={(e) => field("vm_base_dir", e.target.value)}
+                  placeholder="~"
+                  className="font-mono text-xs"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Base path where the model + run artifacts get written. Models
+                  land under <span className="font-mono">{(form.vm_base_dir || "~").replace(/\/+$/, "")}/models/&lt;name&gt;</span>.
+                  Default <span className="font-mono">~</span> (the SSH user&apos;s home). Use an
+                  absolute path like <span className="font-mono">/mnt/scratch</span> if the home
+                  partition is small.
+                </p>
+              </div>
+
+              <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-border bg-muted/30 px-3 py-2.5 text-sm hover:bg-muted/50">
+                <input
+                  type="checkbox"
+                  checked={cleanupModel}
+                  onChange={(e) => setCleanupModel(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-primary"
+                />
+                <div className="min-w-0">
+                  <div className="font-medium">Clean up model after run</div>
+                  <div className="text-xs text-muted-foreground">
+                    SSH back in when benchmaq exits (success or fail) and
+                    <span className="font-mono"> rm -rf </span>
+                    the model&apos;s <span className="font-mono">local_dir</span>{" "}
+                    + HF hub cache. Keeps the VM&apos;s disk from filling up
+                    across runs.
+                  </div>
+                </div>
+              </label>
+            </div>
+          )}
+          {target === "cloud" && (
             <Grid>
               <FieldWrap
                 label="GPU type"
@@ -841,9 +1067,13 @@ export function BenchmarkForm({
                 </Select>
               </FieldWrap>
             </Grid>
+          )}
           </SectionCard>
 
-          {/* Container image — picks the CUDA / pytorch baseline on the pod. */}
+          {/* Container image — picks the CUDA / pytorch baseline on the pod.
+              VMs come with their own preinstalled environment, so we hide this
+              when running on bare metal. */}
+          {target === "cloud" && (
           <SectionCard
             icon={<Box className="h-4 w-4" />}
             title="Container"
@@ -853,7 +1083,20 @@ export function BenchmarkForm({
               value={form.container_image}
               onChange={(v) => field("container_image", v)}
             />
+            {/* CUDA pre-flight — sits below the image picker since it's a
+                compatibility check on the selected image. Cloud-only; VMs use
+                their host driver directly. */}
+            <div className="mt-4">
+              <CudaPreflightPanel
+                image={
+                  mode === "form"
+                    ? form.container_image
+                    : (extractImageFromYaml(yamlBuf) ?? form.container_image)
+                }
+              />
+            </div>
           </SectionCard>
+          )}
 
           {/* Engine runtime — what gets installed on the pod */}
           <SectionCard
@@ -1046,13 +1289,13 @@ export function BenchmarkForm({
               </div>
               <Info className="h-3.5 w-3.5 text-muted-foreground" />
             </summary>
-            <pre className="max-h-96 overflow-auto rounded-b-lg border-t border-border bg-muted/40 px-4 py-3 font-mono text-xs leading-relaxed text-foreground">
+            <pre className="overflow-x-auto rounded-b-lg border-t border-border bg-muted/40 px-4 py-3 font-mono text-xs leading-relaxed text-foreground">
               {formYaml}
             </pre>
           </details>
         </TabsContent>
 
-        <TabsContent value="yaml" className="mt-4">
+        <TabsContent value="yaml" className="mt-4 !flex-none">
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm">Raw YAML</CardTitle>
@@ -1075,19 +1318,12 @@ export function BenchmarkForm({
         </TabsContent>
       </Tabs>
 
-      {/* CUDA pre-flight check — shown in both form and YAML mode. */}
-      <CudaPreflightPanel
-        image={
-          mode === "form"
-            ? form.container_image
-            : (extractImageFromYaml(yamlBuf) ?? form.container_image)
-        }
-      />
-
       {/* Action bar — plain, sits at the bottom of the form (not floating). */}
       <div className="mt-6 flex items-center justify-between gap-3 border-t border-border pt-4">
         <div className="text-xs text-muted-foreground">
-          A new RunPod pod will be created and torn down automatically.
+          {target === "vm"
+            ? "Runs on your registered VM via SSH. No cloud pod is created."
+            : "A new RunPod pod will be created and torn down automatically."}
         </div>
         <div className="flex items-center gap-3">
           {submitError && (
@@ -1453,6 +1689,18 @@ function AdvancedVllmArgs({
                 placeholder="1"
               />
             </KebabField>
+            <KebabField
+              label="port"
+              hint="HTTP port vLLM serves on. Default 8000."
+            >
+              <Input
+                type="text"
+                inputMode="numeric"
+                value={form.port}
+                onChange={(e) => setField("port", e.target.value)}
+                placeholder="8000"
+              />
+            </KebabField>
           </div>
           <KebabField
             label="Extra args (raw)"
@@ -1625,4 +1873,93 @@ function ContainerImagePicker({
       )}
     </div>
   );
+}
+
+// Inline availability row shown under the VM provider dropdown. SSHes the VM
+// and reports per-GPU memory free / total — runpod-equivalent for bare metal.
+function VmAvailabilityRow({
+  state,
+  onRefresh,
+}: {
+  state:
+    | { status: "idle" }
+    | { status: "loading" }
+    | { status: "ok"; data: VmAvailability }
+    | { status: "error"; message: string };
+  onRefresh: () => void;
+}) {
+  if (state.status === "idle") return null;
+  if (state.status === "loading") {
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Checking availability via SSH…
+      </div>
+    );
+  }
+  if (state.status === "error") {
+    return (
+      <div className="flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
+        <span className="inline-flex items-center gap-1.5 truncate">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate" title={state.message}>{state.message}</span>
+        </span>
+        <button type="button" onClick={onRefresh} className="inline-flex items-center gap-1 underline-offset-2 hover:underline">
+          <RefreshCw className="h-3 w-3" /> Retry
+        </button>
+      </div>
+    );
+  }
+  const { data } = state;
+  if (!data.ok) {
+    return (
+      <div className="flex items-center justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-700 dark:text-amber-400">
+        <span className="inline-flex items-center gap-1.5 truncate">
+          <X className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate" title={data.message}>{data.message}</span>
+        </span>
+        <button type="button" onClick={onRefresh} className="inline-flex items-center gap-1 underline-offset-2 hover:underline">
+          <RefreshCw className="h-3 w-3" /> Retry
+        </button>
+      </div>
+    );
+  }
+  const totalFreeMib = data.gpus.reduce((s, g) => s + g.mem_free_mib, 0);
+  const totalMib = data.gpus.reduce((s, g) => s + g.mem_total_mib, 0);
+  // Treat a GPU as "busy" if <20% memory free OR utilisation > 50%.
+  const busy = data.gpus.filter((g) => g.mem_free_mib < g.mem_total_mib * 0.2 || g.util_pct > 50).length;
+  const allFree = busy === 0;
+  return (
+    <div
+      className={cn(
+        "space-y-1 rounded-md border px-2.5 py-1.5 text-xs",
+        allFree
+          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+          : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1.5">
+          {allFree ? <Check className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
+          {data.gpus.length} GPU{data.gpus.length === 1 ? "" : "s"} · {fmtMib(totalFreeMib)} free / {fmtMib(totalMib)}
+          {!allFree && ` · ${busy} busy`}
+        </span>
+        <button type="button" onClick={onRefresh} className="inline-flex items-center gap-1 underline-offset-2 hover:underline">
+          <RefreshCw className="h-3 w-3" /> Refresh
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-muted-foreground">
+        {data.gpus.map((g) => (
+          <span key={g.index}>
+            #{g.index} {g.name.replace(/^NVIDIA\s+/, "")} · {fmtMib(g.mem_free_mib)}/{fmtMib(g.mem_total_mib)} free · {g.util_pct}% util
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function fmtMib(mib: number): string {
+  if (mib >= 1024) return `${(mib / 1024).toFixed(1)} GiB`;
+  return `${mib} MiB`;
 }
