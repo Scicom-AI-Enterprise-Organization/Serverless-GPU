@@ -4,13 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
 import {
-  Boxes,
   CheckSquare,
   Cpu,
   Inbox,
   Loader2,
   MoreHorizontal,
-  Plus,
   Search,
   Trash2,
   User,
@@ -97,20 +95,11 @@ export function EndpointGrid({ apps }: { apps: AppRecord[] }) {
 
   if (apps.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-border bg-muted/20 px-6 py-16 text-center">
-        <div className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
-          <Boxes className="h-5 w-5" />
-        </div>
-        <h2 className="text-base font-medium">No endpoints yet</h2>
-        <p className="max-w-sm text-sm text-muted-foreground">
-          Spin up your first inference endpoint.
+      <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
+        <Inbox className="h-6 w-6 text-muted-foreground/60" />
+        <p className="text-sm text-muted-foreground">
+          No endpoints yet. Click <span className="font-medium text-foreground">New endpoint</span> to spin one up.
         </p>
-        <Button asChild className="mt-2">
-          <Link href="/serverless/new">
-            <Plus className="h-4 w-4" />
-            New endpoint
-          </Link>
-        </Button>
       </div>
     );
   }
@@ -207,8 +196,8 @@ export function EndpointGrid({ apps }: { apps: AppRecord[] }) {
       )}
 
       {filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-border bg-muted/20 px-6 py-10 text-center">
-          <Inbox className="h-5 w-5 text-muted-foreground/60" />
+        <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
+          <Inbox className="h-6 w-6 text-muted-foreground/60" />
           <p className="text-sm text-muted-foreground">No endpoints match your search.</p>
         </div>
       ) : (

@@ -12,15 +12,7 @@ export type TerminalTheme = (typeof TERMINAL_THEMES)[number];
 
 const STORAGE_KEY = "sgpu_terminal_theme";
 
-// The free-tier default. Other themes sit behind a "burn $100 first" paywall
-// (UI-only — no actual billing logic).
 export const DEFAULT_TERMINAL_THEME: TerminalTheme = "rainbow";
-export const PAYWALLED_THEMES: ReadonlySet<TerminalTheme> = new Set<TerminalTheme>([
-  "default",
-  "classic",
-  "sparkle",
-  "christmas",
-]);
 
 export function readTerminalTheme(): TerminalTheme {
   if (typeof window === "undefined") return DEFAULT_TERMINAL_THEME;

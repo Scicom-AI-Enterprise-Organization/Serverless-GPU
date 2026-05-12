@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, Inbox, Loader2, X } from "lucide-react";
+import { Check, Cpu, Inbox, Loader2, User, X } from "lucide-react";
+import { avatarFor } from "@/lib/avatar";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -60,8 +61,8 @@ export function ApprovalsList({ initial }: { initial: ComputePod[] }) {
 
   if (items.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-border bg-muted/20 px-6 py-10 text-center">
-        <Inbox className="h-5 w-5 text-muted-foreground/60" />
+      <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
+        <Inbox className="h-6 w-6 text-muted-foreground/60" />
         <p className="text-sm text-muted-foreground">No pending requests.</p>
       </div>
     );
@@ -69,71 +70,87 @@ export function ApprovalsList({ initial }: { initial: ComputePod[] }) {
 
   return (
     <>
-      <ul className="grid gap-3">
-        {items.map((p) => (
-          <li
-            key={p.id}
-            className="rounded-lg border border-border bg-card p-4"
-          >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <h3 className="truncate text-sm font-medium">{p.name}</h3>
-                  <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
-                    pending
-                  </span>
+      <ul className="flex flex-col gap-3">
+        {items.map((p) => {
+          const avatar = avatarFor(p.name);
+          const busy = pending && busyId === p.id;
+          return (
+            <li
+              key={p.id}
+              className="group block rounded-xl border border-border bg-card p-4 transition-all"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/60 text-base font-semibold text-muted-foreground">
+                    {avatar.letter}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate font-medium text-foreground">{p.name}</span>
+                      <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                        pending
+                      </span>
+                    </div>
+                    <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <span className="truncate font-mono" title={p.id}>{p.id}</span>
+                      <span>·</span>
+                      <User className="h-3 w-3" />
+                      <span className="truncate">{p.created_by}</span>
+                    </div>
+                  </div>
                 </div>
-                <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
-                  {p.id}
-                </p>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setRejecting(p)}
+                    disabled={busy}
+                    className="border-destructive/40 text-destructive hover:border-destructive/60 hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <X className="h-4 w-4" />
+                    Reject
+                  </Button>
+                  <Button size="sm" onClick={() => approve(p)} disabled={busy}>
+                    {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                    Approve
+                  </Button>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setRejecting(p)}
-                  disabled={pending && busyId === p.id}
-                  className="text-destructive hover:text-destructive"
-                >
-                  <X className="h-4 w-4" />
-                  Reject
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={() => approve(p)}
-                  disabled={pending && busyId === p.id}
-                >
-                  {pending && busyId === p.id ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Check className="h-4 w-4" />
-                  )}
-                  Approve
-                </Button>
-              </div>
-            </div>
 
-            <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-4">
-              <Field label="Requested by" value={p.created_by} />
-              <Field
-                label="GPU"
-                value={`${shortGpu(p.gpu_type)} × ${p.gpu_count}`}
-              />
-              <Field label="Disk" value={`${p.container_disk_gb} GB`} />
-              <Field label="Cloud" value={p.cloud_type.toLowerCase()} />
-              <Field label="Template" value={p.template_id ?? "—"} />
-              <Field
-                label="Volume"
-                value={p.volume_gb > 0 ? `${p.volume_gb} GB` : "—"}
-              />
-              <Field
-                label="Submitted"
-                value={relativeTime(p.created_at)}
-                className="col-span-2"
-              />
-            </dl>
-          </li>
-        ))}
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 text-xs">
+                  <Cpu className="h-3 w-3 text-muted-foreground" />
+                  <span className="font-mono">
+                    {shortGpu(p.gpu_type)}
+                    {p.gpu_count > 1 ? ` × ${p.gpu_count}` : ""}
+                  </span>
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 font-mono text-xs">
+                  {p.container_disk_gb} GB disk
+                </span>
+                {p.volume_gb > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 font-mono text-xs">
+                    {p.volume_gb} GB vol
+                  </span>
+                )}
+                {p.template_id && (
+                  <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 font-mono text-xs">
+                    {p.template_id}
+                  </span>
+                )}
+                <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 font-mono text-xs">
+                  {p.cloud_type.toLowerCase()}
+                </span>
+              </div>
+
+              <div className="mt-3 flex items-center justify-end border-t border-border/60 pt-2 text-xs text-muted-foreground">
+                <span title={new Date(p.created_at).toISOString()}>
+                  {new Date(p.created_at).toLocaleString()}
+                </span>
+              </div>
+            </li>
+          );
+        })}
       </ul>
 
       <Dialog
@@ -186,40 +203,9 @@ export function ApprovalsList({ initial }: { initial: ComputePod[] }) {
   );
 }
 
-function Field({
-  label,
-  value,
-  className,
-}: {
-  label: string;
-  value: string;
-  className?: string;
-}) {
-  return (
-    <div className={className}>
-      <dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="mt-0.5 break-words text-foreground">{value}</dd>
-    </div>
-  );
-}
-
 function shortGpu(gpu: string): string {
   return gpu
     .replace(/^NVIDIA\s+/i, "")
     .replace(/\s+GeForce\s+/i, " ")
     .replace(/^GeForce\s+/i, "");
-}
-
-function relativeTime(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  const diff = Date.now() - d.getTime();
-  const m = Math.floor(diff / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
 }

@@ -1,11 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, Flame, Lock } from "lucide-react";
-import { toast } from "sonner";
+import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  PAYWALLED_THEMES,
   TERMINAL_THEMES,
   type TerminalTheme,
   readTerminalTheme,
@@ -44,12 +42,6 @@ export function AppearanceSettings() {
   }, []);
 
   function pick(next: TerminalTheme) {
-    if (PAYWALLED_THEMES.has(next)) {
-      // UI-only paywall. No billing logic — just a vibe gate so people
-      // see the "premium feel" before the actual cost-recovery feature lands.
-      toast.error("Burn $100 first to unlock other terminal themes.");
-      return;
-    }
     setTheme(next);
     writeTerminalTheme(next);
   }
@@ -60,70 +52,33 @@ export function AppearanceSettings() {
         <h2 className="text-sm font-semibold">Terminal appearance</h2>
         <p className="mt-0.5 text-xs text-muted-foreground">
           Affects how SSH commands and other terminal-like blocks look on the
-          Compute pages. Rainbow is free; the rest unlock once you&apos;ve burned
-          enough on real workloads.
+          Compute pages.
         </p>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        {TERMINAL_THEMES.map((t) => {
-          const locked = PAYWALLED_THEMES.has(t);
-          return (
-            <button
-              key={t}
-              type="button"
-              onClick={() => pick(t)}
-              aria-disabled={locked}
-              className={cn(
-                "relative overflow-hidden rounded-lg border p-3 text-left transition-colors",
-                theme === t
-                  ? "border-foreground/60 ring-1 ring-foreground/20"
-                  : "border-border",
-                locked
-                  ? "cursor-not-allowed hover:border-border"
-                  : "hover:border-foreground/40",
-              )}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span
-                  className={cn(
-                    "text-sm font-medium",
-                    locked && "text-muted-foreground",
-                  )}
-                >
-                  {META[t].label}
-                </span>
-                <div className="flex items-center gap-1">
-                  {locked && (
-                    <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
-                      <Flame className="h-3 w-3" />
-                      $100 to unlock
-                    </span>
-                  )}
-                  {theme === t && !locked && (
-                    <Check className="h-4 w-4 text-foreground" />
-                  )}
-                </div>
-              </div>
-              <p
-                className={cn(
-                  "mt-0.5 text-xs",
-                  locked ? "text-muted-foreground/70" : "text-muted-foreground",
-                )}
-              >
-                {META[t].description}
-              </p>
-              <div className={cn(locked && "opacity-40 grayscale")}>
-                <Preview theme={t} />
-              </div>
-              {locked && (
-                <div className="pointer-events-none absolute inset-0 flex items-end justify-end p-2">
-                  <Lock className="h-4 w-4 text-muted-foreground/80" />
-                </div>
-              )}
-            </button>
-          );
-        })}
+        {TERMINAL_THEMES.map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => pick(t)}
+            className={cn(
+              "relative overflow-hidden rounded-lg border p-3 text-left transition-colors hover:border-foreground/40",
+              theme === t
+                ? "border-foreground/60 ring-1 ring-foreground/20"
+                : "border-border",
+            )}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-medium">{META[t].label}</span>
+              {theme === t && <Check className="h-4 w-4 text-foreground" />}
+            </div>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {META[t].description}
+            </p>
+            <Preview theme={t} />
+          </button>
+        ))}
       </div>
     </section>
   );

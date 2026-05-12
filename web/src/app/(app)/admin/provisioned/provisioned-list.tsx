@@ -3,7 +3,8 @@
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Box, Boxes, Inbox, Loader2, RefreshCw, Trash2 } from "lucide-react";
+import { Box, Boxes, Cpu, Inbox, Loader2, RefreshCw, Trash2, User } from "lucide-react";
+import { avatarFor } from "@/lib/avatar";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -153,68 +154,21 @@ export function ProvisionedList({
       </div>
 
       {rows.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-border bg-muted/20 px-6 py-10 text-center">
-          <Inbox className="h-5 w-5 text-muted-foreground/60" />
+        <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
+          <Inbox className="h-6 w-6 text-muted-foreground/60" />
           <p className="text-sm text-muted-foreground">Nothing provisioned right now.</p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/40 text-left text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2">Type</th>
-                <th className="px-3 py-2">Name</th>
-                <th className="px-3 py-2">Owner</th>
-                <th className="px-3 py-2">GPU</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Provisioned</th>
-                <th className="px-3 py-2 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={`${r.kind}-${r.id}`} className="border-t border-border">
-                  <td className="px-3 py-2">
-                    <TypeBadge kind={r.kind} />
-                  </td>
-                  <td className="px-3 py-2">
-                    <Link
-                      href={r.detail_href}
-                      className="font-medium text-foreground underline-offset-2 hover:underline"
-                    >
-                      {r.name}
-                    </Link>
-                    <div className="font-mono text-[11px] text-muted-foreground">
-                      {r.id}
-                    </div>
-                  </td>
-                  <td className="px-3 py-2 text-muted-foreground">{r.owner || "—"}</td>
-                  <td className="px-3 py-2 text-muted-foreground">
-                    {shortGpu(r.gpu)} × {r.gpu_count}
-                  </td>
-                  <td className="px-3 py-2">
-                    <StatusPill status={r.status} />
-                  </td>
-                  <td className="px-3 py-2 text-muted-foreground" title={r.created_at}>
-                    {relativeTime(r.created_at)}
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setConfirm(r)}
-                      disabled={pending}
-                      className="text-destructive hover:text-destructive"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      Terminate
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ul className="flex flex-col gap-3">
+          {rows.map((r) => (
+            <ProvisionedCard
+              key={`${r.kind}-${r.id}`}
+              row={r}
+              onTerminate={() => setConfirm(r)}
+              terminating={pending}
+            />
+          ))}
+        </ul>
       )}
 
       <Dialog
@@ -252,14 +206,75 @@ export function ProvisionedList({
   );
 }
 
-function TypeBadge({ kind }: { kind: "compute" | "inference" }) {
-  const Icon = kind === "compute" ? Box : Boxes;
-  const label = kind === "compute" ? "Compute" : "Inference";
+function ProvisionedCard({
+  row,
+  onTerminate,
+  terminating,
+}: {
+  row: Row;
+  onTerminate: () => void;
+  terminating: boolean;
+}) {
+  const avatar = avatarFor(row.name);
+  const TypeIcon = row.kind === "compute" ? Box : Boxes;
+  const typeLabel = row.kind === "compute" ? "Compute" : "Inference";
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
-      <Icon className="h-3.5 w-3.5" />
-      {label}
-    </span>
+    <li className="group block rounded-xl border border-border bg-card p-4 transition-all hover:border-primary/40 hover:bg-card/80 hover:shadow-md">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/60 text-base font-semibold text-muted-foreground">
+            {avatar.letter}
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Link
+                href={row.detail_href}
+                className="truncate font-medium text-foreground underline-offset-2 hover:underline"
+              >
+                {row.name}
+              </Link>
+              <StatusPill status={row.status} />
+            </div>
+            <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="truncate font-mono" title={row.id}>{row.id}</span>
+              <span>·</span>
+              <User className="h-3 w-3" />
+              <span className="truncate">{row.owner || "—"}</span>
+            </div>
+          </div>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onTerminate}
+          disabled={terminating}
+          className="shrink-0 border-destructive/40 text-destructive hover:border-destructive/60 hover:bg-destructive/10 hover:text-destructive"
+        >
+          <Trash2 className="h-4 w-4" />
+          Terminate
+        </Button>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 text-xs">
+          <TypeIcon className="h-3 w-3 text-muted-foreground" />
+          <span>{typeLabel}</span>
+        </span>
+        <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 text-xs">
+          <Cpu className="h-3 w-3 text-muted-foreground" />
+          <span className="font-mono">
+            {shortGpu(row.gpu)}
+            {row.gpu_count > 1 ? ` × ${row.gpu_count}` : ""}
+          </span>
+        </span>
+      </div>
+
+      <div className="mt-3 flex items-center justify-end border-t border-border/60 pt-2 text-xs text-muted-foreground">
+        <span title={new Date(row.created_at).toISOString()}>
+          {new Date(row.created_at).toLocaleString()}
+        </span>
+      </div>
+    </li>
   );
 }
 
@@ -289,14 +304,3 @@ function shortGpu(gpu: string): string {
     .replace(/^GeForce\s+/i, "");
 }
 
-function relativeTime(iso: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  const diff = Date.now() - d.getTime();
-  const m = Math.floor(diff / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}

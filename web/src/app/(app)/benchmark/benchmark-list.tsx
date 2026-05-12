@@ -223,8 +223,8 @@ export function BenchmarkList({ items }: { items: BenchmarkRecord[] }) {
       )}
 
       {filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-border bg-muted/20 px-6 py-10 text-center">
-          <Inbox className="h-5 w-5 text-muted-foreground/60" />
+        <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
+          <Inbox className="h-6 w-6 text-muted-foreground/60" />
           <p className="text-sm text-muted-foreground">No benchmarks match your filters.</p>
         </div>
       ) : (
