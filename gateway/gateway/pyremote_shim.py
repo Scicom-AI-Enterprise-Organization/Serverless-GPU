@@ -84,5 +84,21 @@ def install() -> None:
                 pass
 
     RemoteExecutor._run_command = _patched_run_command  # type: ignore[assignment]
+
+    # Surface install errors. pyremote's _install_dependencies calls
+    # `_run_command(cmd, stream=self.install_verbose)` and then raises
+    # `RemoteImportError(f"...: {stderr}")` on failure. But uv (and pip with
+    # modern terminals) writes its actual error to STDOUT, not stderr — so
+    # the error message comes back empty. Forcing install_verbose=True
+    # makes _run_command stream both streams live to our subprocess stdout
+    # (which the gateway captures into bench logs), so the real error is
+    # visible whether the install succeeds or fails.
+    _orig_install_deps = RemoteExecutor._install_dependencies
+
+    def _patched_install_deps(self):
+        self.install_verbose = True
+        return _orig_install_deps(self)
+
+    RemoteExecutor._install_dependencies = _patched_install_deps  # type: ignore[assignment]
     _INSTALLED = True
     logger.info("pyremote reconnect-per-command shim installed")
