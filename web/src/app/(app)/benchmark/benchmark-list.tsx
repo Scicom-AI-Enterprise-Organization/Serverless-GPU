@@ -60,6 +60,9 @@ export function BenchmarkList({ items }: { items: BenchmarkRecord[] }) {
   const [deleting, setDeleting] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [single, setSingle] = useState<BenchmarkRecord | null>(null);
+  const [singleDeleting, setSingleDeleting] = useState(false);
+  const [singleError, setSingleError] = useState<string | null>(null);
   const [view, setView] = useState<"rows" | "grid">("rows");
   useEffect(() => {
     const v = window.localStorage.getItem("sgpu_bench_view");
@@ -82,6 +85,21 @@ export function BenchmarkList({ items }: { items: BenchmarkRecord[] }) {
   const exitSelect = () => {
     setSelectMode(false);
     setSelected(new Set());
+  };
+
+  const onSingleDelete = async () => {
+    if (!single) return;
+    setSingleError(null);
+    setSingleDeleting(true);
+    try {
+      await gateway.deleteBenchmark(single.id);
+      setSingle(null);
+      router.refresh();
+    } catch (e) {
+      setSingleError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSingleDeleting(false);
+    }
   };
 
   const onDeleteSelected = async () => {
@@ -282,6 +300,7 @@ export function BenchmarkList({ items }: { items: BenchmarkRecord[] }) {
               selectMode={selectMode}
               selected={selected.has(b.id)}
               onToggle={toggle}
+              onDelete={(bench) => setSingle(bench)}
             />
           ))}
         </div>
@@ -316,6 +335,38 @@ export function BenchmarkList({ items }: { items: BenchmarkRecord[] }) {
             </Button>
             <Button variant="destructive" onClick={onDeleteSelected} disabled={deleting}>
               {deleting ? "Deleting…" : `Delete ${selected.size}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!single}
+        onOpenChange={(o) => {
+          if (!singleDeleting && !o) {
+            setSingle(null);
+            setSingleError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete {single?.name}?</DialogTitle>
+            <DialogDescription>
+              Kills any running subprocess and removes the benchmark record. S3
+              objects are kept. If a RunPod pod is still alive, terminate it
+              manually from RunPod&apos;s dashboard.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            {singleError && (
+              <p className="mr-auto text-sm text-destructive">{singleError}</p>
+            )}
+            <Button variant="outline" onClick={() => setSingle(null)} disabled={singleDeleting}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={onSingleDelete} disabled={singleDeleting}>
+              {singleDeleting ? "Deleting…" : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -2,11 +2,18 @@
 
 import Link from "next/link";
 import yaml from "js-yaml";
-import { Clock, Cpu, Layers, TrendingUp, User } from "lucide-react";
+import { Clock, Cpu, Layers, MoreHorizontal, Trash2, TrendingUp, User } from "lucide-react";
 import type { BenchmarkRecord } from "@/lib/types";
 import { avatarFor } from "@/lib/avatar";
 import { formatCostUSD, useLiveCost } from "@/lib/cost";
 import { BurnFlame } from "@/components/burn-flame";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 // Status pill is the only place this row uses colour. Pattern matches Compute:
@@ -53,11 +60,13 @@ export function BenchmarkRow({
   selectMode = false,
   selected = false,
   onToggle,
+  onDelete,
 }: {
   bench: BenchmarkRecord;
   selectMode?: boolean;
   selected?: boolean;
   onToggle?: (id: string) => void;
+  onDelete?: (bench: BenchmarkRecord) => void;
 }) {
   const avatar = avatarFor(bench.name);
   const result = (bench.result_json ?? {}) as Record<string, unknown>;
@@ -136,16 +145,48 @@ export function BenchmarkRow({
           </div>
         </div>
 
-        {tput != null && (
-          <div className="shrink-0 rounded-md border border-border bg-muted/40 px-2.5 py-1 text-right">
-            <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-              <TrendingUp className="h-3 w-3" /> Throughput
+        <div className="flex shrink-0 items-start gap-2">
+          {tput != null && (
+            <div className="rounded-md border border-border bg-muted/40 px-2.5 py-1 text-right">
+              <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                <TrendingUp className="h-3 w-3" /> Throughput
+              </div>
+              <div className="font-mono text-sm font-semibold tabular-nums">
+                {fmtTput(tput)}
+              </div>
             </div>
-            <div className="font-mono text-sm font-semibold tabular-nums">
-              {fmtTput(tput)}
-            </div>
-          </div>
-        )}
+          )}
+          {!selectMode && onDelete && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="-mr-1 text-muted-foreground hover:text-foreground"
+                  aria-label="Actions"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    onDelete(bench);
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete benchmark
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">

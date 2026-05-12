@@ -3,7 +3,13 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { CheckSquare, Cpu, Inbox, LayoutGrid, List, Search, Trash2, User, X } from "lucide-react";
+import { CheckSquare, Cpu, Inbox, LayoutGrid, List, MoreHorizontal, Search, Trash2, User, X } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { ComputePod, ComputeStatus } from "@/lib/types";
 import { avatarFor } from "@/lib/avatar";
 import { formatCostUSD, useLiveCost } from "@/lib/cost";
@@ -54,6 +60,9 @@ export function ComputeList({ items }: { items: ComputePod[] }) {
   const [deleting, setDeleting] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [single, setSingle] = useState<ComputePod | null>(null);
+  const [singleDeleting, setSingleDeleting] = useState(false);
+  const [singleError, setSingleError] = useState<string | null>(null);
   const [view, setView] = useState<"rows" | "grid">("rows");
   useEffect(() => {
     const v = window.localStorage.getItem("sgpu_compute_view");
@@ -90,6 +99,21 @@ export function ComputeList({ items }: { items: ComputePod[] }) {
   }, [items, q, status]);
 
   const hasFilter = q.trim().length > 0 || status !== "all";
+
+  const onSingleDelete = async () => {
+    if (!single) return;
+    setSingleError(null);
+    setSingleDeleting(true);
+    try {
+      await gateway.deleteCompute(single.id);
+      setSingle(null);
+      router.refresh();
+    } catch (e) {
+      setSingleError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSingleDeleting(false);
+    }
+  };
 
   const onDeleteSelected = async () => {
     if (selected.size === 0) return;
@@ -270,6 +294,7 @@ export function ComputeList({ items }: { items: ComputePod[] }) {
               selectMode={selectMode}
               selected={selected.has(p.id)}
               onToggle={toggle}
+              onDelete={(pod) => setSingle(pod)}
             />
           ))}
         </ul>
@@ -307,6 +332,37 @@ export function ComputeList({ items }: { items: ComputePod[] }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog
+        open={!!single}
+        onOpenChange={(o) => {
+          if (!singleDeleting && !o) {
+            setSingle(null);
+            setSingleError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete {single?.name}?</DialogTitle>
+            <DialogDescription>
+              Terminates the RunPod instance and removes the record. Billing
+              stops once the pod is fully torn down.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            {singleError && (
+              <p className="mr-auto text-sm text-destructive">{singleError}</p>
+            )}
+            <Button variant="outline" onClick={() => setSingle(null)} disabled={singleDeleting}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={onSingleDelete} disabled={singleDeleting}>
+              {singleDeleting ? "Deleting…" : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -316,11 +372,13 @@ function PodRow({
   selectMode,
   selected,
   onToggle,
+  onDelete,
 }: {
   pod: ComputePod;
   selectMode: boolean;
   selected: boolean;
   onToggle: (id: string) => void;
+  onDelete?: (pod: ComputePod) => void;
 }) {
   const avatar = avatarFor(pod.name);
   const inner = (
@@ -355,6 +413,36 @@ function PodRow({
             </div>
           </div>
         </div>
+        {!selectMode && onDelete && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="-mr-1 shrink-0 text-muted-foreground hover:text-foreground"
+                aria-label="Actions"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={(e) => {
+                  e.preventDefault();
+                  onDelete(pod);
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete pod
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
