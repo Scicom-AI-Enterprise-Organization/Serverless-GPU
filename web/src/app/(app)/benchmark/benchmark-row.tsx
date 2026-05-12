@@ -48,7 +48,17 @@ function fmtDuration(secs: number | null): string | null {
   return `${h}h ${m % 60}m`;
 }
 
-export function BenchmarkRow({ bench }: { bench: BenchmarkRecord }) {
+export function BenchmarkRow({
+  bench,
+  selectMode = false,
+  selected = false,
+  onToggle,
+}: {
+  bench: BenchmarkRecord;
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggle?: (id: string) => void;
+}) {
   const avatar = avatarFor(bench.name);
   const result = (bench.result_json ?? {}) as Record<string, unknown>;
   const tput = typeof result.output_throughput === "number" ? result.output_throughput : null;
@@ -88,13 +98,20 @@ export function BenchmarkRow({ bench }: { bench: BenchmarkRecord }) {
     return Math.max(0, Math.round((e - s) / 1000));
   })();
 
-  return (
-    <Link
-      href={`/benchmark/${encodeURIComponent(bench.id)}`}
-      className="group block rounded-xl border border-border bg-card p-4 transition-all hover:border-primary/40 hover:bg-card/80 hover:shadow-md"
-    >
+  const inner = (
+    <>
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
+          {selectMode && (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={() => onToggle?.(bench.id)}
+              onClick={(e) => e.stopPropagation()}
+              className="h-4 w-4 shrink-0 cursor-pointer accent-primary"
+              aria-label={`Select ${bench.name}`}
+            />
+          )}
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/60 text-base font-semibold text-muted-foreground">
             {avatar.letter}
           </div>
@@ -176,6 +193,43 @@ export function BenchmarkRow({ bench }: { bench: BenchmarkRecord }) {
           {new Date(bench.created_at).toLocaleString()}
         </span>
       </div>
+    </>
+  );
+
+  const baseCard =
+    "group block rounded-xl border border-border bg-card p-4 transition-all";
+
+  if (selectMode) {
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => onToggle?.(bench.id)}
+        onKeyDown={(e) => {
+          if (e.key === " " || e.key === "Enter") {
+            e.preventDefault();
+            onToggle?.(bench.id);
+          }
+        }}
+        className={cn(
+          baseCard,
+          "cursor-pointer",
+          selected
+            ? "border-primary/60 bg-primary/5"
+            : "hover:border-primary/40 hover:bg-card/80",
+        )}
+      >
+        {inner}
+      </div>
+    );
+  }
+
+  return (
+    <Link
+      href={`/benchmark/${encodeURIComponent(bench.id)}`}
+      className={cn(baseCard, "hover:border-primary/40 hover:bg-card/80 hover:shadow-md")}
+    >
+      {inner}
     </Link>
   );
 }

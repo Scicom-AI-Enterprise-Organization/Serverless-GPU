@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Box, Boxes, Loader2, RefreshCw, Trash2 } from "lucide-react";
+import { Box, Boxes, Inbox, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -153,8 +153,9 @@ export function ProvisionedList({
       </div>
 
       {rows.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border px-6 py-12 text-center text-sm text-muted-foreground">
-          Nothing provisioned right now.
+        <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-border bg-muted/20 px-6 py-10 text-center">
+          <Inbox className="h-5 w-5 text-muted-foreground/60" />
+          <p className="text-sm text-muted-foreground">Nothing provisioned right now.</p>
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-border">

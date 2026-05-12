@@ -115,7 +115,12 @@ export function PodDetail({ initial }: { initial: ComputePod }) {
           <p className="mt-1 font-mono text-xs text-muted-foreground">{pod.id}</p>
         </div>
         {pod.status !== "terminated" && pod.status !== "rejected" && (
-          <Button variant="outline" onClick={() => setConfirmOpen(true)} disabled={terminating}>
+          <Button
+            variant="outline"
+            onClick={() => setConfirmOpen(true)}
+            disabled={terminating}
+            className="border-destructive/40 text-destructive hover:border-destructive/60 hover:bg-destructive/10 hover:text-destructive"
+          >
             {terminating ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (

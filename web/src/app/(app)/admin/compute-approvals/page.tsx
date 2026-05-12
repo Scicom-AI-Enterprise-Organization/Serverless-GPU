@@ -37,15 +37,17 @@ export default async function ComputeApprovalsPage() {
         username={me.username}
       />
       <div className="flex-1 overflow-y-auto px-6 py-6 lg:px-10 lg:py-8 scrollbar-thin">
-        <header className="mb-6">
-          <h1 className="text-2xl font-semibold tracking-tight">Compute approvals</h1>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Pending pod requests from non-admin users. Approving kicks off
-            provisioning immediately and starts billing on RunPod.
-          </p>
-        </header>
+        <div className="mx-auto max-w-2xl">
+          <header className="mb-6">
+            <h1 className="text-2xl font-semibold tracking-tight">Compute approvals</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Pending pod requests from non-admin users. Approving kicks off
+              provisioning immediately and starts billing on RunPod.
+            </p>
+          </header>
 
-        <ApprovalsList initial={initial} />
+          <ApprovalsList initial={initial} />
+        </div>
       </div>
     </div>
   );

@@ -2,8 +2,20 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
-import { Boxes, Loader2, MoreHorizontal, Plus, Trash2 } from "lucide-react";
+import { useMemo, useState, useTransition } from "react";
+import {
+  Boxes,
+  CheckSquare,
+  Cpu,
+  Inbox,
+  Loader2,
+  MoreHorizontal,
+  Plus,
+  Search,
+  Trash2,
+  User,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,20 +37,75 @@ import { avatarFor } from "@/lib/avatar";
 import { cn } from "@/lib/utils";
 import { deleteEndpoint } from "./actions";
 
+function searchableText(a: AppRecord): string {
+  return [a.name, a.app_id, a.model, a.gpu, a.owner ?? ""].join(" ").toLowerCase();
+}
+
 export function EndpointGrid({ apps }: { apps: AppRecord[] }) {
-  const [confirm, setConfirm] = useState<AppRecord | null>(null);
+  const router = useRouter();
+  const [single, setSingle] = useState<AppRecord | null>(null);
+  const [q, setQ] = useState("");
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const toggle = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const exitSelect = () => {
+    setSelectMode(false);
+    setSelected(new Set());
+  };
+
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const tokens = needle ? needle.split(/\s+/).filter(Boolean) : [];
+    return apps.filter((a) => {
+      if (tokens.length === 0) return true;
+      const text = searchableText(a);
+      return tokens.every((t) => text.includes(t));
+    });
+  }, [apps, q]);
+
+  const onDeleteSelected = async () => {
+    if (selected.size === 0) return;
+    setDeleting(true);
+    const ids = Array.from(selected);
+    const results = await Promise.allSettled(ids.map((id) => deleteEndpoint(id)));
+    const failures = results.filter(
+      (r) => r.status === "rejected" || (r.status === "fulfilled" && !r.value.ok),
+    ).length;
+    setDeleting(false);
+    setConfirmOpen(false);
+    if (failures === 0) {
+      toast.success(`Deleted ${ids.length} endpoint${ids.length === 1 ? "" : "s"}`, {
+        duration: 4000,
+      });
+    } else {
+      toast.error(`${failures} of ${ids.length} failed to delete`, { duration: 5000 });
+    }
+    exitSelect();
+    router.refresh();
+  };
 
   if (apps.length === 0) {
     return (
-      <div className="grid place-items-center rounded-xl border border-dashed border-border bg-card/40 px-6 py-16 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
+      <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-border bg-muted/20 px-6 py-16 text-center">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
           <Boxes className="h-5 w-5" />
         </div>
-        <h2 className="mt-4 text-base font-medium">No endpoints yet</h2>
-        <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+        <h2 className="text-base font-medium">No endpoints yet</h2>
+        <p className="max-w-sm text-sm text-muted-foreground">
           Spin up your first inference endpoint.
         </p>
-        <Button asChild className="mt-6">
+        <Button asChild className="mt-2">
           <Link href="/serverless/new">
             <Plus className="h-4 w-4" />
             New endpoint
@@ -47,58 +114,205 @@ export function EndpointGrid({ apps }: { apps: AppRecord[] }) {
       </div>
     );
   }
+
   return (
-    <>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {apps.map((app) => (
-          <EndpointCard key={app.app_id} app={app} onDelete={() => setConfirm(app)} />
-        ))}
+    <div>
+      <div className="mb-4 flex gap-2">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="search"
+            placeholder="Search by name, id, model, GPU, owner…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            className="h-10 w-full rounded-md border border-input bg-background pl-9 pr-9 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+          />
+          {q && (
+            <button
+              type="button"
+              onClick={() => setQ("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              title="Clear"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+        {selectMode ? (
+          <button
+            type="button"
+            onClick={exitSelect}
+            disabled={deleting}
+            className="inline-flex h-10 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-sm shadow-xs hover:bg-muted disabled:opacity-50"
+          >
+            <X className="h-4 w-4" /> Cancel
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setSelectMode(true)}
+            className="inline-flex h-10 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-sm shadow-xs hover:bg-muted"
+          >
+            <CheckSquare className="h-4 w-4" /> Select
+          </button>
+        )}
       </div>
 
-      <DeleteDialog target={confirm} onClose={() => setConfirm(null)} />
-    </>
+      {selectMode && (
+        <div className="mb-3 flex items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+          <span className="text-muted-foreground">
+            {selected.size} selected
+            {filtered.length > 0 && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={() => setSelected(new Set(filtered.map((a) => a.app_id)))}
+                  className="ml-2 underline underline-offset-2 hover:text-foreground"
+                >
+                  Select all visible
+                </button>
+                {selected.size > 0 && (
+                  <>
+                    {" · "}
+                    <button
+                      type="button"
+                      onClick={() => setSelected(new Set())}
+                      className="underline underline-offset-2 hover:text-foreground"
+                    >
+                      Clear
+                    </button>
+                  </>
+                )}
+              </>
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => setConfirmOpen(true)}
+            disabled={selected.size === 0 || deleting}
+            className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            {deleting ? "Deleting…" : `Delete ${selected.size > 0 ? selected.size : ""}`.trim()}
+          </button>
+        </div>
+      )}
+
+      {q && (
+        <div className="mb-3 text-xs text-muted-foreground">
+          {filtered.length} of {apps.length} match for{" "}
+          <span className="font-mono text-foreground">&quot;{q}&quot;</span>
+        </div>
+      )}
+
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-border bg-muted/20 px-6 py-10 text-center">
+          <Inbox className="h-5 w-5 text-muted-foreground/60" />
+          <p className="text-sm text-muted-foreground">No endpoints match your search.</p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {filtered.map((app) => (
+            <EndpointCard
+              key={app.app_id}
+              app={app}
+              selectMode={selectMode}
+              selected={selected.has(app.app_id)}
+              onToggle={toggle}
+              onDelete={() => setSingle(app)}
+            />
+          ))}
+        </div>
+      )}
+
+      <SingleDeleteDialog target={single} onClose={() => setSingle(null)} />
+
+      <Dialog open={confirmOpen} onOpenChange={(o) => !deleting && setConfirmOpen(o)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Delete {selected.size} endpoint{selected.size === 1 ? "" : "s"}?
+            </DialogTitle>
+            <DialogDescription>
+              All workers for each endpoint will be drained and queues cleared.
+              This can&apos;t be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={deleting}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={onDeleteSelected} disabled={deleting}>
+              {deleting ? "Deleting…" : `Delete ${selected.size}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 
-function EndpointCard({ app, onDelete }: { app: AppRecord; onDelete: () => void }) {
+function EndpointCard({
+  app,
+  selectMode,
+  selected,
+  onToggle,
+  onDelete,
+}: {
+  app: AppRecord;
+  selectMode: boolean;
+  selected: boolean;
+  onToggle: (id: string) => void;
+  onDelete: () => void;
+}) {
   const avatar = avatarFor(app.name);
-  return (
-    <Link
-      href={`/serverless/${encodeURIComponent(app.app_id)}`}
-      className="group block rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-card/80"
-    >
-      <div className="flex items-start justify-between">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-muted/60 text-base font-semibold text-muted-foreground">
+
+  const inner = (
+    <>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          {selectMode && (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={() => onToggle(app.app_id)}
+              onClick={(e) => e.stopPropagation()}
+              className="h-4 w-4 shrink-0 cursor-pointer accent-primary"
+              aria-label={`Select ${app.name}`}
+            />
+          )}
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/60 text-base font-semibold text-muted-foreground">
             {avatar.letter}
           </div>
-          <div>
-            <div className="font-medium text-foreground">{app.name}</div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span className="font-mono">{app.model}</span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="truncate font-medium text-foreground">{app.name}</span>
+              <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                Ready
+              </span>
+            </div>
+            <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="truncate font-mono" title={app.app_id}>{app.app_id}</span>
               {app.owner && (
                 <>
                   <span>·</span>
-                  <span>by {app.owner}</span>
+                  <User className="h-3 w-3" />
+                  <span className="truncate">{app.owner}</span>
                 </>
               )}
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
-            Ready
-          </span>
+        {!selectMode && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="-mr-1 text-muted-foreground hover:text-foreground"
+                className="-mr-1 shrink-0 text-muted-foreground hover:text-foreground"
                 aria-label="Actions"
                 onClick={(e) => {
-                  // Stop the click bubbling up to the card-level <Link>; we
-                  // want the menu to open, not navigate.
                   e.preventDefault();
                   e.stopPropagation();
                 }}
@@ -119,18 +333,70 @@ function EndpointCard({ app, onDelete }: { app: AppRecord; onDelete: () => void 
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-        </div>
+        )}
       </div>
-      <dl className="mt-4 grid grid-cols-3 gap-2 text-xs">
-        <Stat label="GPU" value={app.gpu} />
-        <Stat label="Max workers" value={String(app.autoscaler.max_containers)} />
-        <Stat label="Created" value={new Date(app.created_at).toLocaleDateString()} />
-      </dl>
+
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 text-xs">
+          <span className="font-mono">{app.model}</span>
+        </span>
+        <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 text-xs">
+          <Cpu className="h-3 w-3 text-muted-foreground" />
+          <span className="font-mono">
+            {app.gpu}
+            {app.gpu_count > 1 ? ` × ${app.gpu_count}` : ""}
+          </span>
+        </span>
+        <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 font-mono text-xs">
+          max {app.autoscaler.max_containers}
+        </span>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2 text-xs text-muted-foreground">
+        <span />
+        <span title={new Date(app.created_at).toISOString()}>
+          {new Date(app.created_at).toLocaleString()}
+        </span>
+      </div>
+    </>
+  );
+
+  const base = "group block rounded-xl border border-border bg-card p-4 transition-all";
+
+  if (selectMode) {
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => onToggle(app.app_id)}
+        onKeyDown={(e) => {
+          if (e.key === " " || e.key === "Enter") {
+            e.preventDefault();
+            onToggle(app.app_id);
+          }
+        }}
+        className={cn(
+          base,
+          "cursor-pointer",
+          selected ? "border-primary/60 bg-primary/5" : "hover:border-primary/40 hover:bg-card/80",
+        )}
+      >
+        {inner}
+      </div>
+    );
+  }
+
+  return (
+    <Link
+      href={`/serverless/${encodeURIComponent(app.app_id)}`}
+      className={cn(base, "hover:border-primary/40 hover:bg-card/80 hover:shadow-md")}
+    >
+      {inner}
     </Link>
   );
 }
 
-function DeleteDialog({
+function SingleDeleteDialog({
   target,
   onClose,
 }: {
@@ -177,11 +443,3 @@ function DeleteDialog({
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md bg-muted/40 px-2 py-1.5">
-      <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 truncate font-medium text-foreground">{value}</dd>
-    </div>
-  );
-}

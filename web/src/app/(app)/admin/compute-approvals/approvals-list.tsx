@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, Loader2, X } from "lucide-react";
+import { Check, Inbox, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -60,8 +60,9 @@ export function ApprovalsList({ initial }: { initial: ComputePod[] }) {
 
   if (items.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-border px-6 py-12 text-center text-sm text-muted-foreground">
-        No pending requests.
+      <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-border bg-muted/20 px-6 py-10 text-center">
+        <Inbox className="h-5 w-5 text-muted-foreground/60" />
+        <p className="text-sm text-muted-foreground">No pending requests.</p>
       </div>
     );
   }

@@ -1,9 +1,21 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import yaml from "js-yaml";
-import { Search, X } from "lucide-react";
+import { CheckSquare, Inbox, Search, Trash2, X } from "lucide-react";
+import { toast } from "sonner";
+import { gateway } from "@/lib/gateway";
 import type { BenchmarkRecord } from "@/lib/types";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { BenchmarkRow } from "./benchmark-row";
 
 /** Pre-compute a flat searchable string per benchmark. Includes name, id,
@@ -36,8 +48,48 @@ function searchableText(b: BenchmarkRecord): string {
     .toLowerCase();
 }
 
+const STATUS_OPTIONS = ["all", "queued", "running", "done", "failed", "cancelled"] as const;
+type StatusFilter = (typeof STATUS_OPTIONS)[number];
+
 export function BenchmarkList({ items }: { items: BenchmarkRecord[] }) {
+  const router = useRouter();
   const [q, setQ] = useState("");
+  const [status, setStatus] = useState<StatusFilter>("all");
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const toggle = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const exitSelect = () => {
+    setSelectMode(false);
+    setSelected(new Set());
+  };
+
+  const onDeleteSelected = async () => {
+    if (selected.size === 0) return;
+    setDeleting(true);
+    const ids = Array.from(selected);
+    const results = await Promise.allSettled(ids.map((id) => gateway.deleteBenchmark(id)));
+    const failures = results.filter((r) => r.status === "rejected").length;
+    setDeleting(false);
+    setConfirmOpen(false);
+    if (failures === 0) {
+      toast.success(`Deleted ${ids.length} benchmark${ids.length === 1 ? "" : "s"}`, { duration: 4000 });
+    } else {
+      toast.error(`${failures} of ${ids.length} failed to delete`, { duration: 5000 });
+    }
+    exitSelect();
+    router.refresh();
+  };
 
   const haystacks = useMemo(
     () => items.map((b) => ({ bench: b, text: searchableText(b) })),
@@ -46,57 +98,171 @@ export function BenchmarkList({ items }: { items: BenchmarkRecord[] }) {
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    if (!needle) return items;
-    // Multi-token AND search: every whitespace-separated token must match
-    // somewhere in the haystack. Lets you do "qwen rtx done" as one query.
-    const tokens = needle.split(/\s+/).filter(Boolean);
+    const tokens = needle ? needle.split(/\s+/).filter(Boolean) : [];
     return haystacks
-      .filter(({ text }) => tokens.every((t) => text.includes(t)))
+      .filter(({ bench, text }) => {
+        if (status !== "all" && bench.status !== status) return false;
+        if (tokens.length === 0) return true;
+        return tokens.every((t) => text.includes(t));
+      })
       .map(({ bench }) => bench);
-  }, [haystacks, items, q]);
+  }, [haystacks, q, status]);
+
+  const hasFilter = q.trim().length > 0 || status !== "all";
 
   return (
     <div>
-      <div className="relative mb-4">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <input
-          type="search"
-          placeholder="Search by name, id, model, GPU, owner, status…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          className="h-10 w-full rounded-md border border-input bg-background pl-9 pr-9 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
-        />
-        {q && (
+      <div className="mb-4 flex gap-2">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="search"
+            placeholder="Search by name, id, model, GPU, owner, status…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            className="h-10 w-full rounded-md border border-input bg-background pl-9 pr-9 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+          />
+          {q && (
+            <button
+              type="button"
+              onClick={() => setQ("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              title="Clear"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value as StatusFilter)}
+          className="h-10 rounded-md border border-input bg-background px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+          title="Filter by status"
+        >
+          {STATUS_OPTIONS.map((s) => (
+            <option key={s} value={s}>
+              {s === "all" ? "All statuses" : s.charAt(0).toUpperCase() + s.slice(1)}
+            </option>
+          ))}
+        </select>
+        {selectMode ? (
           <button
             type="button"
-            onClick={() => setQ("")}
-            className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-            title="Clear"
+            onClick={exitSelect}
+            disabled={deleting}
+            className="inline-flex h-10 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-sm shadow-xs hover:bg-muted disabled:opacity-50"
           >
-            <X className="h-3.5 w-3.5" />
+            <X className="h-4 w-4" /> Cancel
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setSelectMode(true)}
+            className="inline-flex h-10 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-sm shadow-xs hover:bg-muted"
+          >
+            <CheckSquare className="h-4 w-4" /> Select
           </button>
         )}
       </div>
 
-      {q && (
+      {selectMode && (
+        <div className="mb-3 flex items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+          <span className="text-muted-foreground">
+            {selected.size} selected
+            {filtered.length > 0 && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={() => setSelected(new Set(filtered.map((b) => b.id)))}
+                  className="ml-2 underline underline-offset-2 hover:text-foreground"
+                >
+                  Select all visible
+                </button>
+                {selected.size > 0 && (
+                  <>
+                    {" · "}
+                    <button
+                      type="button"
+                      onClick={() => setSelected(new Set())}
+                      className="underline underline-offset-2 hover:text-foreground"
+                    >
+                      Clear
+                    </button>
+                  </>
+                )}
+              </>
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => setConfirmOpen(true)}
+            disabled={selected.size === 0 || deleting}
+            className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            {deleting ? "Deleting…" : `Delete ${selected.size > 0 ? selected.size : ""}`.trim()}
+          </button>
+        </div>
+      )}
+
+      {hasFilter && (
         <div className="mb-3 text-xs text-muted-foreground">
-          {filtered.length} of {items.length} match{filtered.length === 1 ? "es" : "es"} for{" "}
-          <span className="font-mono text-foreground">&quot;{q}&quot;</span>
+          {filtered.length} of {items.length} match
+          {q && (
+            <>
+              {" "}for <span className="font-mono text-foreground">&quot;{q}&quot;</span>
+            </>
+          )}
+          {status !== "all" && (
+            <>
+              {" "}· status <span className="font-mono text-foreground">{status}</span>
+            </>
+          )}
         </div>
       )}
 
       {filtered.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border px-6 py-12 text-center text-sm text-muted-foreground">
-          No benchmarks match{" "}
-          <span className="font-mono text-foreground">&quot;{q}&quot;</span>. Try a different query.
+        <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-border bg-muted/20 px-6 py-10 text-center">
+          <Inbox className="h-5 w-5 text-muted-foreground/60" />
+          <p className="text-sm text-muted-foreground">No benchmarks match your filters.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3">
+        <div className="flex flex-col gap-3">
           {filtered.map((b) => (
-            <BenchmarkRow key={b.id} bench={b} />
+            <BenchmarkRow
+              key={b.id}
+              bench={b}
+              selectMode={selectMode}
+              selected={selected.has(b.id)}
+              onToggle={toggle}
+            />
           ))}
         </div>
       )}
+
+      <Dialog open={confirmOpen} onOpenChange={(o) => !deleting && setConfirmOpen(o)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Delete {selected.size} benchmark{selected.size === 1 ? "" : "s"}?
+            </DialogTitle>
+            <DialogDescription>
+              Kills any running subprocesses and removes the benchmark records. S3
+              objects are kept. If a RunPod pod is still alive, terminate it
+              manually from RunPod&apos;s dashboard.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={deleting}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={onDeleteSelected} disabled={deleting}>
+              {deleting ? "Deleting…" : `Delete ${selected.size}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
