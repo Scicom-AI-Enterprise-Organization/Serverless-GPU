@@ -1116,6 +1116,25 @@ async def aggregate(
 
     async def fetch_one(b: Benchmark) -> list[AggregatePoint]:
         cfg_meta = _parse_config(b.config_yaml or "")
+        # VM (bare-metal) benches don't have a runpod.pod block in the YAML,
+        # so gpu_type/gpu_count come back empty. Fall back to the provider's
+        # stored GPU info (populated by the last Test/availability probe) so
+        # the Performance explorer can label the series with e.g. "L40S
+        # (TM-VM1)" instead of "—".
+        if b.provider_id and not cfg_meta.get("gpu_type"):
+            try:
+                async with session_factory()() as _s:
+                    from .db import Provider as _Provider
+                    prov = await _s.get(_Provider, b.provider_id)
+                if prov is not None:
+                    pcfg = prov.config or {}
+                    gpus_list = pcfg.get("gpus") or []
+                    if isinstance(gpus_list, list) and gpus_list:
+                        short = str(gpus_list[0]).replace("NVIDIA ", "").strip()
+                        cfg_meta["gpu_type"] = f"{short} ({prov.name})"
+                    cfg_meta["gpu_count"] = int(pcfg.get("gpu_count") or cfg_meta.get("gpu_count") or 1)
+            except Exception as e:
+                logger.warning("aggregate: provider lookup for %s failed: %s", b.id, e)
         try:
             keys = []
             token = None

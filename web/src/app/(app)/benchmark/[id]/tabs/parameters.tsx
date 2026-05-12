@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import yaml from "js-yaml";
 import {
   AlertCircle,
@@ -23,7 +23,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import type { BenchmarkRecord } from "@/lib/types";
+import { gateway } from "@/lib/gateway";
+import type { BenchmarkRecord, ProviderRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** A loose shape for the parsed benchmaq runpod-mode YAML — every field is
@@ -62,6 +63,21 @@ type Parsed = {
 
 export function ParametersTab({ bench }: { bench: BenchmarkRecord }) {
   const [parseError, setParseError] = useState<string | null>(null);
+  // For VM runs the submitted YAML doesn't contain host/port/user — those
+  // are injected by the gateway at run time. Resolve them by looking up the
+  // provider record on mount. Falls back gracefully if the provider has been
+  // deleted since the bench ran.
+  const [provider, setProvider] = useState<ProviderRecord | null>(null);
+  useEffect(() => {
+    if (!bench.provider_id) return;
+    gateway
+      .listProviders()
+      .then((rows) => {
+        const hit = rows.find((p) => p.id === bench.provider_id) ?? null;
+        setProvider(hit);
+      })
+      .catch(() => setProvider(null));
+  }, [bench.provider_id]);
   const parsed = useMemo<Parsed | null>(() => {
     try {
       const v = yaml.load(bench.config_yaml);
@@ -127,10 +143,37 @@ export function ParametersTab({ bench }: { bench: BenchmarkRecord }) {
           }
         >
           <KvGrid>
-            <Kv label="Provider" value={bench.provider_id} mono wide />
-            <Kv label="Host" value={parsed.remote?.host} mono wide />
-            <Kv label="SSH user" value={parsed.remote?.username} mono />
-            <Kv label="SSH port" value={parsed.remote?.port} />
+            <Kv
+              label="Provider"
+              value={provider?.name ?? bench.provider_id}
+              mono
+              wide
+            />
+            <Kv
+              label="Host"
+              value={provider?.host ?? parsed.remote?.host}
+              mono
+              wide
+            />
+            <Kv
+              label="SSH user"
+              value={provider?.user ?? parsed.remote?.username}
+              mono
+            />
+            <Kv
+              label="SSH port"
+              value={provider?.port ?? parsed.remote?.port}
+            />
+            <Kv
+              label="GPUs (last probed)"
+              value={
+                provider?.gpu_count != null && provider.gpu_count > 0
+                  ? `${(provider.gpus ?? []).slice(0, 1).join("").replace(/^NVIDIA\s+/i, "") || "GPU"}${provider.gpu_count > 1 ? ` × ${provider.gpu_count}` : ""}`
+                  : undefined
+              }
+              mono
+              wide
+            />
           </KvGrid>
         </ParamsCard>
       ) : (
