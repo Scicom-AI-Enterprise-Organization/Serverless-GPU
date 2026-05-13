@@ -267,6 +267,10 @@ def install() -> None:
             setup_script = (
                 "set -e\n"
                 "export TERM=dumb NO_COLOR=1 UV_NO_PROGRESS=1\n"
+                # Preflight: stale root-owned ~/.config from a prior run breaks
+                # the uv installer's fish-completion drop. Best-effort repair.
+                'sudo -n chown -R "$USER:$USER" "$HOME/.config" 2>/dev/null || true\n'
+                'mkdir -p "$HOME/.config/fish/conf.d" 2>/dev/null || true\n'
                 'if ! command -v uv &>/dev/null && ! [ -f "$HOME/.local/bin/uv" ]; then\n'
                 "    curl -LsSf https://astral.sh/uv/install.sh | sh\n"
                 "fi\n"
@@ -305,6 +309,9 @@ def install() -> None:
             run_script = (
                 "set -e\n"
                 "export TERM=dumb NO_COLOR=1\n"
+                # XetHub CAS backend is single-stream serial (~7 MB/s); disabling
+                # it lets hf-transfer's parallel chunked GETs kick in (~140 MB/s).
+                "export HF_HUB_DISABLE_XET=1\n"
                 'export PATH="$HOME/.local/bin:$PATH"\n'
                 f"source {venv_path}/bin/activate\n"
                 f"benchmaq bench {remote_config_path}\n"
