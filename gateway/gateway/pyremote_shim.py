@@ -115,11 +115,11 @@ def install() -> None:
             cmd = f"{self._python_path} -m pip install {deps_str}"
 
         print(f"[shim] installing {self.dependencies}", flush=True)
-        exit_status, stdout_data, stderr_data = self._run_command(cmd, timeout=300, stream=False)
-        if stdout_data:
-            print(stdout_data, flush=True)
-        if stderr_data:
-            print(stderr_data, file=_sys.stderr, flush=True)
+        # stream=True makes pyremote's _run_command print lines live as they
+        # arrive on stdout/stderr — uv's download progress + resolver output
+        # show up in the bench log in real time. The returned stdout_data /
+        # stderr_data are the joined captured lines (for the error message).
+        exit_status, stdout_data, stderr_data = self._run_command(cmd, timeout=600, stream=True)
         print(f"[shim] install rc={exit_status}", flush=True)
 
         if exit_status != 0:
