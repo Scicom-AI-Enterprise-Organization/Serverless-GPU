@@ -20,7 +20,7 @@ import re
 import shutil
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
@@ -755,6 +755,69 @@ def bootstrap_ssh_key_from_env() -> None:
     logger.info("bench: wrote SSH key from env to %s", path)
 
 
+# In-process registry of running bench tasks. Populated when a bench is
+# kicked off (see create_benchmark) and used by the janitor to detect rows
+# that say `running` in the DB but have no live task in this process —
+# usually the result of an asyncio task GC, a crashed coroutine that
+# couldn't update the DB, or a SIGKILL that bypassed _safe_run.
+_active_runners: dict[str, asyncio.Task] = {}
+
+# How long a bench can sit at status='running' with no live in-process task
+# and no recent redis log activity before the janitor reaps it. Generous
+# enough to tolerate brief gaps (model warmup, vllm compile) while still
+# catching genuinely dead rows.
+_JANITOR_STALL_SECONDS = 600
+
+
+async def janitor_loop(redis) -> None:
+    """Periodically sweep for `running` benchmark rows that have no live task
+    in this process and no recent log activity, and mark them failed.
+
+    Triggered by the asyncio-task-GC bug (a fire-and-forget create_task can
+    vanish silently if no strong ref is held). The strong-ref fix in
+    create_benchmark prevents that going forward; the janitor is the safety
+    net for any other path that leaves a row stranded (OOMKill, SIGTERM
+    after _safe_run started but before it could update the DB, etc.).
+    """
+    while True:
+        try:
+            await _janitor_sweep(redis)
+        except Exception as e:
+            logger.warning("bench janitor sweep failed: %s", e)
+        await asyncio.sleep(60)
+
+
+async def _janitor_sweep(redis) -> None:
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=_JANITOR_STALL_SECONDS)
+    async with session_factory()() as s:
+        rows = (
+            await s.execute(
+                select(Benchmark).where(
+                    Benchmark.status == "running",
+                    Benchmark.started_at < cutoff,
+                )
+            )
+        ).scalars().all()
+
+    for b in rows:
+        if b.id in _active_runners:
+            continue  # live task in this process — leave alone
+        logger.warning("bench janitor: reaping stuck row %s (no live task)", b.id)
+        async with session_factory()() as s:
+            row = await s.get(Benchmark, b.id)
+            if row is None or row.status != "running":
+                continue
+            row.status = "failed"
+            row.exit_code = -1
+            row.ended_at = datetime.now(timezone.utc)
+            row.error_text = "subprocess vanished — reaped by gateway janitor"
+            await s.commit()
+        try:
+            await _push_log(redis, b.id, "[gateway] reaped by janitor — runner vanished")
+        except Exception:
+            pass
+
+
 async def cleanup_orphaned_running(redis) -> int:
     """Called from main.py lifespan. Marks any rows still 'running' (left over
     from a previous gateway process) as 'failed' with a recovery message."""
@@ -977,10 +1040,14 @@ async def create_benchmark(
     session.add(bench)
     await session.commit()
 
-    # Kick off the runner. asyncio.create_task is fire-and-forget — the runner
-    # owns its own DB session + error handling.
+    # Kick off the runner. We MUST keep a strong reference to the task —
+    # asyncio's docs warn that "tasks can be garbage-collected mid-execution"
+    # if the only ref is the loop's weakref. _active_runners is also what
+    # the janitor uses to tell stuck-in-DB rows apart from in-flight ones.
     redis = request.app.state.redis
-    asyncio.create_task(_safe_run(redis, bench_id, body.config_yaml))
+    task = asyncio.create_task(_safe_run(redis, bench_id, body.config_yaml))
+    _active_runners[bench_id] = task
+    task.add_done_callback(lambda _t, _bid=bench_id: _active_runners.pop(_bid, None))
 
     await audit.record(user, "benchmark.create", "benchmark", bench_id, body.name)
 

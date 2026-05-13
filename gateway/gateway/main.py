@@ -278,6 +278,7 @@ async def lifespan(app: FastAPI):
     app.state.provider = None
     app.state.autoscaler_task = None
     app.state.reconciler_task = None
+    app.state.bench_janitor_task = None
     if os.environ.get("BENCHMARK_S3_BUCKET", "").strip():
         # Materialize SSH key from env (prod) before anything else uses it.
         bench_module.bootstrap_ssh_key_from_env()
@@ -287,6 +288,9 @@ async def lifespan(app: FastAPI):
                 "bench: marked %d previously-running benchmark(s) as failed (gateway restart). "
                 "Check RunPod for any pods left billing.", orphaned,
             )
+        app.state.bench_janitor_task = asyncio.create_task(
+            bench_module.janitor_loop(app.state.redis)
+        )
         logger.info("bench enabled (bucket=%s)", os.environ.get("BENCHMARK_S3_BUCKET"))
     if os.environ.get("RUNPOD_API_KEY", "").strip():
         # Compute uses the same RunPod creds; cleanup any rows the previous
@@ -342,7 +346,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        for task_attr in ("autoscaler_task", "reconciler_task"):
+        for task_attr in ("autoscaler_task", "reconciler_task", "bench_janitor_task"):
             t = getattr(app.state, task_attr, None)
             if t:
                 t.cancel()
