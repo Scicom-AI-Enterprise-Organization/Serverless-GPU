@@ -140,5 +140,191 @@ def install() -> None:
         self._deps_installed.add(deps_hash)
 
     RemoteExecutor._install_dependencies = _patched_install_deps  # type: ignore[assignment]
+
+    # Patch benchmaq's `_ssh_run_stream` to use `bash -c <quoted-script>`
+    # instead of `bash -s` + stdin piping + shutdown_write(). Some SSH proxies
+    # (e.g. Go-based proxies fronting managed GPU VMs) don't tolerate stdin
+    # streaming + shutdown_write — they close the channel immediately, which
+    # surfaces as `recv_exit_status() == -1` and zero output. `bash -c` is a
+    # single exec with the whole script as one argv — works against the same
+    # proxies that pyremote's exec_command worked against (once we
+    # reconnect-per-call).
+    try:
+        from benchmaq import runner as _benchmaq_runner  # type: ignore
+        import re as _re
+        import shlex as _shlex
+
+        # Strip ANSI/VT escape sequences (colours, cursor moves, erase-line,
+        # etc.) before printing — the bench log viewer is a plain <pre> so
+        # raw escapes show up as garbage like "[2K[1A[37m".
+        _ANSI_RE = _re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+        _orig_ssh_run_stream = _benchmaq_runner._ssh_run_stream
+
+        # Replace benchmaq's `_ssh_run_stream` with a PTY-backed version
+        # (same trick skypilot uses for live install output). Allocating a
+        # pseudo-terminal makes uv/pip/curl call `isatty() == True`, so they
+        # emit their live progress bars/spinners instead of the silent
+        # non-TTY fallback. As a side benefit the PTY merges stderr into
+        # stdout at the kernel level, which sidesteps the TM Go-SSH proxy's
+        # habit of silently dropping the fd-2 stream — and the real exit
+        # code comes back through, so we don't need a sentinel either.
+        #
+        # We still inject `--clear` into `uv venv` so re-runs against an
+        # existing ~/.bench-venv don't abort with "already exists".
+        def _patched_ssh_run_stream(ssh_client, cmd: str, label: str = "") -> int:
+            cmd = cmd.replace("uv venv ", "uv venv --clear ")
+            prefix = f"[{label}] " if label else ""
+            print(f"{prefix}[shim] sending {len(cmd)}-byte script over ssh (pty)", flush=True)
+            channel = ssh_client.get_transport().open_session()
+            channel.get_pty(term="xterm-256color", width=120, height=40)
+            channel.exec_command(f"bash -c {_shlex.quote(cmd)}")
+            # Stream raw bytes through so progress bars / ANSI render live.
+            # PTY mode emits \r\n at end-of-line — normalise to \n so we
+            # don't double-emit blank lines. Solo \r (used by progress
+            # bars to redraw in place) is still treated as a frame break,
+            # so the log viewer shows each progress frame on its own line.
+            buf = b""
+            while True:
+                chunk = channel.recv(4096)
+                if not chunk:
+                    break
+                chunk = chunk.replace(b"\r\n", b"\n")
+                buf += chunk
+                while True:
+                    idx = -1
+                    for sep in (b"\n", b"\r"):
+                        i = buf.find(sep)
+                        if i != -1 and (idx == -1 or i < idx):
+                            idx = i
+                    if idx == -1:
+                        break
+                    line = buf[:idx].decode("utf-8", errors="replace")
+                    buf = buf[idx + 1:]
+                    line = _ANSI_RE.sub("", line).rstrip()
+                    if not line:
+                        continue
+                    print(f"{prefix}{line}", flush=True)
+            if buf:
+                line = _ANSI_RE.sub("", buf.decode("utf-8", errors="replace")).rstrip()
+                if line:
+                    print(f"{prefix}{line}", flush=True)
+            return channel.recv_exit_status()
+
+        _benchmaq_runner._ssh_run_stream = _patched_ssh_run_stream  # type: ignore[assignment]
+        logger.info("benchmaq _ssh_run_stream patched (pty form)")
+
+        # Replace `run_remote_ssh` with a reconnect-per-step version. The
+        # original opens one paramiko.SSHClient and reuses it for install,
+        # SFTP config upload, and the benchmark run — but the TM proxy
+        # only allows ONE session/subsystem channel per TCP connection, so
+        # the SFTP step always fails with "Channel closed". We dial a
+        # fresh SSH connection for each step.
+        def _patched_run_remote_ssh(config, remote_cfg):
+            import io
+            import yaml
+            import paramiko
+
+            host = remote_cfg["host"]
+            port = remote_cfg.get("port", 22)
+            username = remote_cfg.get("username", "root")
+            key_filename = remote_cfg.get("key_filename")
+            password = remote_cfg.get("password")
+
+            uv_cfg = remote_cfg.get("uv", {})
+            venv_path = uv_cfg.get("path", "~/.bench-venv")
+            python_version = uv_cfg.get("python_version", "3.11")
+            benchmaq_ref = uv_cfg.get(
+                "benchmaq_ref",
+                "git+https://github.com/Scicom-AI-Enterprise-Organization/llm-benchmaq.git@main",
+            )
+            vllm_version = uv_cfg.get("vllm_version")
+
+            if key_filename:
+                key_filename = os.path.expanduser(key_filename)
+
+            def _connect():
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                kw = {"port": port, "username": username}
+                if key_filename:
+                    kw["key_filename"] = key_filename
+                if password:
+                    kw["password"] = password
+                ssh.connect(host, **kw)
+                return ssh
+
+            print(
+                f"Connecting to {username}@{host}:{port} "
+                "(ssh backend, reconnect-per-step)..."
+            )
+
+            vllm_pin = f' "vllm=={vllm_version}"' if vllm_version else ""
+            # TERM=dumb + NO_COLOR + UV_NO_PROGRESS keep uv (and pip/vllm)
+            # in line-buffered mode despite the PTY — otherwise uv detects
+            # a TTY and switches to a cursor-redraw progress UI that turns
+            # the bench log viewer into ANSI soup.
+            setup_script = (
+                "set -e\n"
+                "export TERM=dumb NO_COLOR=1 UV_NO_PROGRESS=1\n"
+                'if ! command -v uv &>/dev/null && ! [ -f "$HOME/.local/bin/uv" ]; then\n'
+                "    curl -LsSf https://astral.sh/uv/install.sh | sh\n"
+                "fi\n"
+                'export PATH="$HOME/.local/bin:$PATH"\n'
+                f"uv venv {venv_path} --python {python_version}\n"
+                f"source {venv_path}/bin/activate\n"
+                f'uv pip install "benchmaq[vllm] @ {benchmaq_ref}"{vllm_pin}\n'
+            )
+            print()
+            print("=" * 64)
+            print("STEP: INSTALL")
+            print("=" * 64)
+            ssh = _connect()
+            try:
+                rc = _benchmaq_runner._ssh_run_stream(ssh, setup_script, label="install")
+            finally:
+                ssh.close()
+            if rc != 0:
+                raise RuntimeError(f"Remote setup failed (exit {rc})")
+
+            remote_config_path = "/tmp/benchmaq_remote_config.yaml"
+            print()
+            print(f"Uploading config → {remote_config_path}")
+            # Strip the `remote:` block before uploading — otherwise the
+            # remote benchmaq reads it, sees `backend: ssh`, and recursively
+            # tries to SSH back to itself through the proxy.
+            remote_config = {k: v for k, v in config.items() if k != "remote"}
+            config_bytes = yaml.dump(remote_config, default_flow_style=False).encode("utf-8")
+            ssh = _connect()
+            try:
+                with ssh.open_sftp() as sftp:
+                    sftp.putfo(io.BytesIO(config_bytes), remote_config_path)
+            finally:
+                ssh.close()
+
+            run_script = (
+                "set -e\n"
+                "export TERM=dumb NO_COLOR=1\n"
+                'export PATH="$HOME/.local/bin:$PATH"\n'
+                f"source {venv_path}/bin/activate\n"
+                f"benchmaq bench {remote_config_path}\n"
+            )
+            print()
+            print("=" * 64)
+            print("STEP: BENCHMARK")
+            print("=" * 64)
+            ssh = _connect()
+            try:
+                rc = _benchmaq_runner._ssh_run_stream(ssh, run_script, label="bench")
+            finally:
+                ssh.close()
+            if rc != 0:
+                raise RuntimeError(f"Remote benchmark failed (exit {rc})")
+
+        _benchmaq_runner.run_remote_ssh = _patched_run_remote_ssh  # type: ignore[assignment]
+        logger.info("benchmaq run_remote_ssh patched (reconnect-per-step)")
+    except Exception as e:
+        logger.warning("could not patch benchmaq _ssh_run_stream: %s", e)
+
     _INSTALLED = True
     logger.info("pyremote reconnect-per-command shim installed")
