@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Copy, Trash2 } from "lucide-react";
+import { Copy, Octagon, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -58,8 +58,11 @@ export function BenchmarkDetail({ bench: initial }: { bench: BenchmarkRecord }) 
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   };
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmTerminate, setConfirmTerminate] = useState(false);
   const [pending, startTransition] = useTransition();
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [terminateError, setTerminateError] = useState<string | null>(null);
+  const inFlight = bench.status === "queued" || bench.status === "running";
 
   // Auto-refresh while not terminal so KPIs (status, exit_code, etc.) stay live.
   useEffect(() => {
@@ -84,6 +87,26 @@ export function BenchmarkDetail({ bench: initial }: { bench: BenchmarkRecord }) 
         router.push("/benchmark");
       } catch (e) {
         setDeleteError(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
+  function handleTerminate() {
+    setTerminateError(null);
+    startTransition(async () => {
+      try {
+        await gateway.terminateBenchmark(bench.id);
+        setConfirmTerminate(false);
+        // Refresh so the status pill and KPIs flip to cancelled immediately;
+        // cleanup log lines stream in via the existing log tab.
+        try {
+          const next = await gateway.getBenchmark(bench.id);
+          setBench(next);
+        } catch {
+          // ignore — next auto-refresh tick will pick it up
+        }
+      } catch (e) {
+        setTerminateError(e instanceof Error ? e.message : String(e));
       }
     });
   }
@@ -129,6 +152,17 @@ export function BenchmarkDetail({ bench: initial }: { bench: BenchmarkRecord }) 
               <Copy className="h-4 w-4" />
               Duplicate
             </Button>
+            {inFlight && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirmTerminate(true)}
+                className="text-destructive hover:text-destructive"
+              >
+                <Octagon className="h-4 w-4" />
+                Terminate
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -171,6 +205,36 @@ export function BenchmarkDetail({ bench: initial }: { bench: BenchmarkRecord }) 
           <TabsContent value="files"><FilesTab bench={bench} /></TabsContent>
         </Tabs>
       </div>
+
+      <Dialog
+        open={confirmTerminate}
+        onOpenChange={(o) => {
+          setConfirmTerminate(o);
+          if (!o) setTerminateError(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Terminate benchmark?</DialogTitle>
+            <DialogDescription>
+              Stops the run, kills any remote bench process over SSH, removes
+              the downloaded model from the VM, and tears down the RunPod pod
+              if one was provisioned. The row stays so logs remain viewable.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            {terminateError && (
+              <p className="mr-auto text-sm text-destructive">{terminateError}</p>
+            )}
+            <Button variant="outline" onClick={() => setConfirmTerminate(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleTerminate} disabled={pending}>
+              {pending ? "Terminating…" : "Terminate"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={confirmDelete}

@@ -399,6 +399,51 @@ def _ssh_cleanup_paths_sync(vm_target: dict, paths: list[str]) -> tuple[bool, st
             pass
 
 
+def _ssh_kill_bench_procs_sync(vm_target: dict) -> tuple[bool, str]:
+    """SSH in and pkill any benchmaq/huggingface-cli/vllm processes running
+    under the bench venv. Best-effort — used by the terminate endpoint.
+    Pattern matches `.benchmark-venv/bin/python` so we don't touch unrelated
+    python processes the user might be running on the VM."""
+    import paramiko
+    try:
+        pkey = paramiko.PKey.from_path(vm_target["key_filename"])
+    except Exception:
+        from .vm_probe import _load_pkey
+        with open(vm_target["key_filename"], "r") as f:
+            pkey = _load_pkey(f.read())
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            hostname=vm_target["host"],
+            port=int(vm_target["port"]),
+            username=vm_target["user"],
+            pkey=pkey,
+            timeout=15,
+            banner_timeout=15,
+            auth_timeout=15,
+            look_for_keys=False,
+            allow_agent=False,
+        )
+    except Exception as e:
+        return False, f"SSH connect failed: {e}"
+
+    try:
+        cmd = (
+            "pkill -9 -f '.benchmark-venv/bin/python' 2>/dev/null; "
+            "pkill -9 -f 'huggingface-cli' 2>/dev/null; "
+            "pkill -9 -f 'benchmaq' 2>/dev/null; true"
+        )
+        _, stdout, _ = client.exec_command(f"bash -lc \"{cmd}\"", timeout=30)
+        stdout.channel.recv_exit_status()
+        return True, "killed remote bench processes"
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
 async def _cleanup_vm_model(
     redis,
     bench_id: str,
@@ -500,6 +545,22 @@ async def _fetch_runpod_cost(pod_id: str) -> Optional[float]:
             return float(cost) if cost is not None else None
     except Exception:
         return None
+
+
+async def _terminate_runpod_pod(pod_id: str) -> None:
+    """Delete a RunPod pod by id. Raises if the API call fails (caller logs)."""
+    api_key = os.environ.get("RUNPOD_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("RUNPOD_API_KEY not set")
+    base = os.environ.get("RUNPOD_API_BASE", "https://rest.runpod.io/v1")
+    async with httpx.AsyncClient(
+        base_url=base,
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=30.0,
+    ) as cli:
+        r = await cli.delete(f"/pods/{pod_id}")
+        if r.status_code >= 400 and r.status_code != 404:
+            raise RuntimeError(f"RunPod terminate {pod_id}: {r.status_code} {r.text[:200]}")
 
 
 async def _capture_runpod_cost(bench_id: str, pod_id: str) -> None:
@@ -1295,6 +1356,107 @@ async def get_benchmark(
         raise HTTPException(status_code=403, detail={"error": "forbidden"})
     owner = await session.get(User, b.owner_id)
     return _to_record(b, owner.username if owner else "")
+
+
+# Strong refs to terminate-cleanup tasks so they don't get GC'd mid-flight.
+_active_terminations: dict[str, asyncio.Task] = {}
+
+
+@router.post("/{bench_id}/terminate")
+async def terminate_benchmark(
+    bench_id: str,
+    request: Request,
+    user: User = Depends(require_section("benchmark")),
+    session: AsyncSession = Depends(get_session),
+):
+    """Stop a running benchmark: cancel the runner task, kill the local
+    subprocess, mark the row `cancelled`, then run cleanup in the background
+    (SSH-pkill remote bench procs, rm the VM model dir, terminate any RunPod
+    pod). Returns immediately; cleanup progress is appended to the bench log."""
+    b = await session.get(Benchmark, bench_id)
+    if not b:
+        raise HTTPException(status_code=404, detail={"error": "benchmark not found"})
+    if not user.is_admin and b.owner_id != user.id:
+        raise HTTPException(status_code=403, detail={"error": "forbidden"})
+    if b.status in ("done", "failed", "cancelled"):
+        raise HTTPException(status_code=409, detail={"error": f"benchmark already {b.status}"})
+
+    redis = request.app.state.redis
+    provider_id = b.provider_id
+    raw_yaml = b.config_yaml
+    cleanup_model_flag = b.cleanup_model
+    runpod_pod_id = b.runpod_pod_id
+    bench_name = b.name
+
+    await _push_log(redis, bench_id, "[gateway] terminate requested")
+
+    # Cancel the runner task — its CancelledError handler kills the local
+    # subprocess, which closes the SSH channel and SIGHUPs the remote bash.
+    task = _active_runners.get(bench_id)
+    if task and not task.done():
+        task.cancel()
+
+    # Safety net: hard-kill the local subprocess if the task isn't tracked
+    # (e.g. orphan from before a gateway restart that left the row running).
+    proc = _LIVE.pop(bench_id, None)
+    if proc and proc.returncode is None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    # Mark cancelled now so the UI flips immediately. Cleanup runs async.
+    b.status = "cancelled"
+    b.exit_code = -1
+    if b.ended_at is None:
+        b.ended_at = datetime.now(timezone.utc)
+    await session.commit()
+
+    async def _cleanup():
+        # SSH-side cleanup for VM benches: kill any survivors + remove model.
+        if provider_id:
+            work = _work_dir(bench_id)
+            try:
+                vm_target = await _materialise_vm_key(work, provider_id)
+            except Exception as e:
+                await _push_log(redis, bench_id, f"[gateway] terminate: vm key materialise failed: {e}")
+                vm_target = None
+            if vm_target is not None:
+                await _push_log(redis, bench_id, "[gateway] terminate: killing remote bench processes")
+                try:
+                    ok, msg = await asyncio.to_thread(_ssh_kill_bench_procs_sync, vm_target)
+                    level = "info" if ok else "warning"
+                    await _push_log(redis, bench_id, f"[gateway] terminate [{level}]: {msg}")
+                except Exception as e:
+                    await _push_log(redis, bench_id, f"[gateway] terminate: pkill failed: {e}")
+                if cleanup_model_flag:
+                    try:
+                        await _cleanup_vm_model(redis, bench_id, vm_target, raw_yaml)
+                    except Exception as e:
+                        await _push_log(redis, bench_id, f"[gateway] terminate: model cleanup failed: {e}")
+
+        # RunPod pod teardown — only when benchmaq spawned a pod itself.
+        if runpod_pod_id:
+            try:
+                await _terminate_runpod_pod(runpod_pod_id)
+                await _push_log(redis, bench_id, f"[gateway] terminate: runpod pod {runpod_pod_id} torn down")
+            except Exception as e:
+                await _push_log(redis, bench_id, f"[gateway] terminate: runpod teardown failed: {e}")
+
+        # Upload the final log to S3 so the cancelled row stays viewable.
+        try:
+            full = _full_log_path(bench_id)
+            if full.exists():
+                s3_put_file(f"{benchmark_s3_prefix(bench_id)}logs.txt", str(full))
+        except Exception as e:
+            await _push_log(redis, bench_id, f"[gateway] terminate: s3 log upload failed: {e}")
+
+    cleanup_task = asyncio.create_task(_cleanup())
+    _active_terminations[bench_id] = cleanup_task
+    cleanup_task.add_done_callback(lambda _t, _bid=bench_id: _active_terminations.pop(_bid, None))
+
+    await audit.record(user, "benchmark.terminate", "benchmark", bench_id, bench_name)
+    return {"ok": True, "id": bench_id, "status": "cancelled"}
 
 
 @router.delete("/{bench_id}")

@@ -147,6 +147,11 @@ export const gateway = {
       `/benchmarks/${encodeURIComponent(id)}`,
       { method: "DELETE" },
     ),
+  terminateBenchmark: (id: string) =>
+    request<{ ok: boolean; id: string; status: string }>(
+      `/benchmarks/${encodeURIComponent(id)}/terminate`,
+      { method: "POST" },
+    ),
   listBenchmarkFiles: (id: string) =>
     request<BenchmarkFile[]>(`/benchmarks/${encodeURIComponent(id)}/files`),
   /** Browser EventSource URL for SSE log stream — proxied through Next so the
