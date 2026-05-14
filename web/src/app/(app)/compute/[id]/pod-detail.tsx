@@ -16,7 +16,7 @@ import {
 import { gateway } from "@/lib/gateway";
 import { formatCostUSD, formatRateUSD, useLiveCost } from "@/lib/cost";
 import { BurnFlame } from "@/components/burn-flame";
-import type { ComputePod, ComputeStatus } from "@/lib/types";
+import type { ComputePod, ComputeStatus, ProviderRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const POLL_MS = 4000;
@@ -27,7 +27,29 @@ export function PodDetail({ initial }: { initial: ComputePod }) {
   const [terminating, setTerminating] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [terminateError, setTerminateError] = useState<string | null>(null);
+  const [provider, setProvider] = useState<ProviderRecord | null>(null);
   const pollRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!pod.provider_id) {
+      setProvider(null);
+      return;
+    }
+    gateway
+      .listProviders()
+      .then((rows) => setProvider(rows.find((r) => r.id === pod.provider_id) ?? null))
+      .catch(() => {});
+  }, [pod.provider_id]);
+
+  const providerLabel =
+    provider?.kind === "pi"
+      ? "Prime Intellect"
+      : provider?.kind === "runpod"
+        ? "RunPod"
+        : pod.provider_id
+          ? "Custom account"
+          : "RunPod (gateway default)";
+  const keyHint = pod.provider_id ? `sgpu-${pod.provider_id}` : "sgpu-runpod";
 
   // Poll while we're waiting for the pod to move out of an in-flight state.
   // 'pending_approval' polls so the requester sees the status flip the moment
@@ -75,7 +97,7 @@ export function PodDetail({ initial }: { initial: ComputePod }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "sgpu-runpod";
+      a.download = keyHint;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -100,7 +122,7 @@ export function PodDetail({ initial }: { initial: ComputePod }) {
 
   const sshCmd =
     pod.status === "running" && pod.public_ip && pod.ssh_port
-      ? `ssh -i ~/.ssh/sgpu-runpod -p ${pod.ssh_port} ${pod.ssh_user}@${pod.public_ip}`
+      ? `ssh -i ~/.ssh/${keyHint} -p ${pod.ssh_port} ${pod.ssh_user}@${pod.public_ip}`
       : null;
 
   return (
@@ -150,7 +172,7 @@ export function PodDetail({ initial }: { initial: ComputePod }) {
             <DialogDescription>
               {pod.status === "pending_approval"
                 ? "The approval request will be cancelled. You can submit a new one any time."
-                : "Stops billing immediately and deletes the pod from RunPod. Anything not saved to a persistent volume is lost. This can't be undone."}
+                : `Stops billing immediately and deletes the pod from ${providerLabel}. Anything not saved to a persistent volume is lost. This can't be undone.`}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -185,6 +207,7 @@ export function PodDetail({ initial }: { initial: ComputePod }) {
           <Field label="Container disk" value={`${pod.container_disk_gb} GB`} />
           <Field label="Volume" value={pod.volume_gb > 0 ? `${pod.volume_gb} GB` : "—"} />
           <Field label="Cloud" value={pod.cloud_type.toLowerCase()} />
+          <Field label="Provider" value={providerLabel} />
           <Field label="Template" value={pod.template_id ?? "—"} />
           <Field label="Rate" value={formatRateUSD(pod.cost_per_hr)} />
           <LiveCostField pod={pod} />
@@ -247,9 +270,10 @@ export function PodDetail({ initial }: { initial: ComputePod }) {
 
       {pod.status === "running" && (
         <>
+          {pod.jupyter_url && (
           <Card
             title="JupyterLab"
-            subtitle="Always enabled. Click Open — the URL has a one-time token baked in, no password prompt."
+            subtitle="One-time token baked into the URL — click Open, no password prompt."
           >
             <div className="space-y-3">
               <Row label="URL">
@@ -281,6 +305,7 @@ export function PodDetail({ initial }: { initial: ComputePod }) {
               </Row>
             </div>
           </Card>
+          )}
 
           <Card title="SSH" subtitle="For terminal access. Download the key once and chmod 0600.">
             <div className="space-y-3">

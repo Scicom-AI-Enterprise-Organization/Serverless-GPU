@@ -214,6 +214,35 @@ async def _validate_api_key(kind: str, api_key: str) -> tuple[bool, str, dict]:
     raise HTTPException(status_code=400, detail=f"kind {kind} not an api-key kind")
 
 
+async def _pi_upload_ssh_key(api_key: str, label: str, public_key: str) -> str:
+    """Register a public key on the Prime Intellect account and return its id.
+
+    PI's pod-create requires an `sshKeyId` referencing an account-level key —
+    there's no inline pub-key field on the pod object. We upload once at
+    provider-create time so every compute pod created with this provider can
+    pass the stored id without an extra round-trip."""
+    base = os.environ.get("PI_API_BASE", "https://api.primeintellect.ai").rstrip("/")
+    async with httpx.AsyncClient(timeout=15.0) as cli:
+        r = await cli.post(
+            f"{base}/api/v1/ssh_keys/",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"name": label, "publicKey": public_key},
+        )
+    if r.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"PI ssh key upload failed: HTTP {r.status_code}: {r.text[:200]}",
+        )
+    data = r.json()
+    key_id = data.get("id") or (data.get("data") or {}).get("id")
+    if not key_id:
+        raise HTTPException(
+            status_code=502,
+            detail=f"PI ssh key upload returned no id: {str(data)[:200]}",
+        )
+    return key_id
+
+
 @router.get("", response_model=list[ProviderRecord])
 async def list_providers(
     user: User = Depends(current_user),  # noqa: ARG001 — auth-only; list is org-wide
@@ -278,6 +307,11 @@ async def create_provider(
             "validated_at": datetime.now(timezone.utc).isoformat(),
             "account_email": account.get("email") if isinstance(account, dict) else None,
         }
+        if req.kind == "pi":
+            # PI requires an account-registered key referenced by id on
+            # pod-create. Upload now so compute create stays single-round-trip.
+            pi_key_id = await _pi_upload_ssh_key(key, f"sgpu-{pid}", ssh_pub)
+            config["pi_ssh_key_id"] = pi_key_id
     else:  # pragma: no cover — guarded above
         raise HTTPException(status_code=400, detail=f"kind {req.kind} not implemented")
 

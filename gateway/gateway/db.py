@@ -287,6 +287,11 @@ async def init_db() -> None:
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_compute_pods_provider_id ON compute_pods(provider_id)"
         ))
+        # Persisted Jupyter URL for non-RunPod kinds (PI). NULL = derive from
+        # runpod_pod_id at render time (RunPod proxy domain).
+        await conn.execute(text(
+            "ALTER TABLE compute_pods ADD COLUMN IF NOT EXISTS jupyter_url_override VARCHAR(512)"
+        ))
         # GitHub SSO: column for linking platform accounts to GitHub user IDs.
         await conn.execute(text(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id VARCHAR(64)"

@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { NumberField } from "@/components/ui/number-field";
 import { Textarea } from "@/components/ui/textarea";
 import { gateway } from "@/lib/gateway";
 import { cn } from "@/lib/utils";
@@ -214,12 +215,11 @@ function RequestsTabInner({ appId }: { appId: string }) {
           <div className="flex items-center gap-2">
             <label className="flex items-center gap-2 text-xs text-muted-foreground">
               max_tokens
-              <Input
-                type="number"
+              <NumberField
                 min={1}
                 max={2048}
                 value={maxTokens}
-                onChange={(e) => setMaxTokens(Math.max(1, Number(e.target.value)))}
+                onChange={setMaxTokens}
                 className="h-8 w-20 font-mono"
               />
             </label>

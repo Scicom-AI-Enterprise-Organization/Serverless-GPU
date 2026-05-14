@@ -37,6 +37,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { NumberField } from "@/components/ui/number-field";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -1061,24 +1062,18 @@ export function BenchmarkForm({
                 </Select>
               </FieldWrap>
               <FieldWrap label="GPU count" hint="Set > 1 for tensor parallelism.">
-                <Input
-                  type="number"
+                <NumberField
                   min={1}
                   max={8}
                   value={form.gpu_count}
-                  onChange={(e) =>
-                    field("gpu_count", parseInt(e.target.value || "1", 10))
-                  }
+                  onChange={(v) => field("gpu_count", v)}
                 />
               </FieldWrap>
               <FieldWrap label="Disk (GB)" hint="Container + volume. Big models need more.">
-                <Input
-                  type="number"
+                <NumberField
                   min={20}
                   value={form.disk_size}
-                  onChange={(e) =>
-                    field("disk_size", parseInt(e.target.value || "80", 10))
-                  }
+                  onChange={(v) => field("disk_size", v)}
                 />
               </FieldWrap>
               <FieldWrap
@@ -1218,23 +1213,17 @@ export function BenchmarkForm({
                   <SweepChips values={parseCsvInts(form.concurrencies_csv)} />
                 </FieldWrap>
                 <FieldWrap label="Output length" hint="Same for every run.">
-                  <Input
-                    type="number"
+                  <NumberField
                     min={1}
                     value={form.output_len}
-                    onChange={(e) =>
-                      field("output_len", parseInt(e.target.value || "128", 10))
-                    }
+                    onChange={(v) => field("output_len", v)}
                   />
                 </FieldWrap>
                 <FieldWrap label="Num prompts" hint="Total requests per run.">
-                  <Input
-                    type="number"
+                  <NumberField
                     min={1}
                     value={form.num_prompts}
-                    onChange={(e) =>
-                      field("num_prompts", parseInt(e.target.value || "50", 10))
-                    }
+                    onChange={(v) => field("num_prompts", v)}
                   />
                 </FieldWrap>
                 <FieldWrap
@@ -1252,46 +1241,34 @@ export function BenchmarkForm({
             ) : (
               <Grid>
                 <FieldWrap label="Input length" hint="Random tokens per prompt.">
-                  <Input
-                    type="number"
+                  <NumberField
                     min={1}
                     value={form.input_len}
-                    onChange={(e) =>
-                      field("input_len", parseInt(e.target.value || "256", 10))
-                    }
+                    onChange={(v) => field("input_len", v)}
                   />
                 </FieldWrap>
                 <FieldWrap label="Output length" hint="Tokens to generate per request.">
-                  <Input
-                    type="number"
+                  <NumberField
                     min={1}
                     value={form.output_len}
-                    onChange={(e) =>
-                      field("output_len", parseInt(e.target.value || "128", 10))
-                    }
+                    onChange={(v) => field("output_len", v)}
                   />
                 </FieldWrap>
                 <FieldWrap label="Num prompts" hint="Total requests in this run.">
-                  <Input
-                    type="number"
+                  <NumberField
                     min={1}
                     value={form.num_prompts}
-                    onChange={(e) =>
-                      field("num_prompts", parseInt(e.target.value || "50", 10))
-                    }
+                    onChange={(v) => field("num_prompts", v)}
                   />
                 </FieldWrap>
                 <FieldWrap
                   label="Max concurrency"
                   hint="In-flight requests. Tune for throughput."
                 >
-                  <Input
-                    type="number"
+                  <NumberField
                     min={1}
                     value={form.max_concurrency}
-                    onChange={(e) =>
-                      field("max_concurrency", parseInt(e.target.value || "4", 10))
-                    }
+                    onChange={(v) => field("max_concurrency", v)}
                   />
                 </FieldWrap>
                 <FieldWrap

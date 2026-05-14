@@ -15,6 +15,8 @@ import type {
   ComputePod,
   ComputeSshInfo,
   ComputeTemplate,
+  PiImageOption,
+  RunpodTemplateSearchResult,
   CreateAppRequest,
   CreateAppResponse,
   CreateBenchmarkRequest,
@@ -196,6 +198,31 @@ export const gateway = {
     request<ComputeSshInfo>(`/compute/${encodeURIComponent(id)}/ssh`),
   listComputeTemplates: () =>
     request<ComputeTemplate[]>("/compute/templates"),
+  searchRunpodTemplates: (params: { q?: string; limit?: number; provider_id?: string | null }) => {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.provider_id) qs.set("provider_id", params.provider_id);
+    const q = qs.toString();
+    return request<RunpodTemplateSearchResult[]>(
+      `/compute/runpod/templates${q ? `?${q}` : ""}`,
+    );
+  },
+  listPiImages: () => request<PiImageOption[]>("/compute/pi/images"),
+  listPiCompatibleImages: (params: {
+    gpu: string;
+    count: number;
+    cloud_type: "COMMUNITY" | "SECURE";
+    provider_id?: string | null;
+  }) => {
+    const qs = new URLSearchParams({
+      gpu: params.gpu,
+      count: String(params.count),
+      cloud_type: params.cloud_type,
+    });
+    if (params.provider_id) qs.set("provider_id", params.provider_id);
+    return request<PiImageOption[]>(`/compute/pi/images/compatible?${qs.toString()}`);
+  },
   listComputeApprovals: () => request<ComputePod[]>("/compute/approvals"),
   approveCompute: (id: string) =>
     request<ComputePod>(`/compute/${encodeURIComponent(id)}/approve`, {

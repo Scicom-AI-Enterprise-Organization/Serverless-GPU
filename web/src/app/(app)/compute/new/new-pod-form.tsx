@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NumberField } from "@/components/ui/number-field";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -17,10 +18,50 @@ import {
 import { AvailabilityBadge } from "@/components/availability-badge";
 import { useGpuAvailability } from "@/lib/use-gpu-availability";
 import { gateway } from "@/lib/gateway";
-import type { ComputeTemplate, ProviderRecord } from "@/lib/types";
+import type {
+  ComputeTemplate,
+  PiImageOption,
+  ProviderRecord,
+  RunpodTemplateSearchResult,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // Same option list as the benchmark form so users see one consistent picker.
+// Fallback list rendered if /compute/pi/images is unreachable (e.g. gateway
+// pre-dates the route). Keeps the picker usable instead of stuck on "Loading…".
+const PI_IMAGES_FALLBACK: PiImageOption[] = [
+  {
+    id: "cuda_12_6_pytorch_2_7",
+    name: "PyTorch 2.7 + CUDA 12.6",
+    description: "Newest CUDA/PyTorch combo PI offers. Broadest sub-provider support.",
+  },
+  {
+    id: "cuda_12_4_pytorch_2_6",
+    name: "PyTorch 2.6 + CUDA 12.4",
+    description: "Slightly older — pick if you need PyTorch ≤ 2.6.",
+  },
+  {
+    id: "cuda_12_4_pytorch_2_5",
+    name: "PyTorch 2.5 + CUDA 12.4",
+    description: "Same CUDA as our RunPod default. Good fallback when 12.6 is short of stock.",
+  },
+  {
+    id: "ubuntu_22_cuda_12",
+    name: "Ubuntu 22.04 + CUDA 12",
+    description: "Minimal Ubuntu + CUDA 12. Bring your own framework.",
+  },
+  {
+    id: "vllm_llama_70b",
+    name: "vLLM + Llama-3 70B",
+    description: "vLLM pre-loaded with a Llama-3 70B endpoint.",
+  },
+  {
+    id: "stable_diffusion",
+    name: "Stable Diffusion",
+    description: "Stable Diffusion pre-configured.",
+  },
+];
+
 const GPU_OPTIONS = [
   { id: "NVIDIA RTX A4000", label: "RTX A4000", hint: "16 GB · cheap baseline" },
   { id: "NVIDIA RTX A5000", label: "RTX A5000", hint: "24 GB" },
@@ -42,21 +83,97 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
   const [templateId, setTemplateId] = useState(
     templates[0]?.id ?? "pytorch-2.4-cuda12.4",
   );
+  // For non-curated RunPod templates picked via search we also carry the
+  // resolved imageName so the gateway doesn't have to round-trip back to
+  // RunPod's templates API at create time.
+  const [imageOverride, setImageOverride] = useState<string | null>(null);
   const [secureCloud, setSecureCloud] = useState(false);
   const [providerId, setProviderId] = useState<string>("");
   const [providers, setProviders] = useState<ProviderRecord[]>([]);
+  const [piImages, setPiImages] = useState<PiImageOption[]>([]);
+  const [piImagesError, setPiImagesError] = useState<string | null>(null);
+  const [piImagesFiltered, setPiImagesFiltered] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   useEffect(() => {
     gateway.listProviders().then(setProviders).catch(() => {});
+    gateway
+      .listPiImages()
+      .then((rows) => {
+        setPiImages(rows.length > 0 ? rows : PI_IMAGES_FALLBACK);
+      })
+      .catch((e) => {
+        setPiImages(PI_IMAGES_FALLBACK);
+        setPiImagesError(e instanceof Error ? e.message : String(e));
+      });
   }, []);
+
+  const selectedProvider = useMemo(
+    () => providers.find((p) => p.id === providerId) ?? null,
+    [providers, providerId],
+  );
+  const providerKind: "runpod" | "pi" = selectedProvider?.kind === "pi" ? "pi" : "runpod";
+
+  // For PI: narrow the image list to ones at least one in-stock sub-provider
+  // supports for the current (gpu, count, tier). Re-runs when those change.
+  useEffect(() => {
+    if (providerKind !== "pi") {
+      setPiImagesFiltered(false);
+      return;
+    }
+    let cancelled = false;
+    const tid = setTimeout(() => {
+      gateway
+        .listPiCompatibleImages({
+          gpu: gpuType,
+          count: gpuCount,
+          cloud_type: secureCloud ? "SECURE" : "COMMUNITY",
+          provider_id: providerId || null,
+        })
+        .then((rows) => {
+          if (cancelled) return;
+          if (rows.length === 0) {
+            setPiImagesFiltered(false);
+            return;
+          }
+          setPiImages(rows);
+          setPiImagesFiltered(true);
+        })
+        .catch(() => {
+          if (!cancelled) setPiImagesFiltered(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(tid);
+    };
+  }, [providerKind, gpuType, gpuCount, secureCloud, providerId]);
+
+  // When switching provider kind, snap template_id back to the kind's default
+  // so we don't ship a RunPod image id to PI (or vice versa).
+  useEffect(() => {
+    if (providerKind === "pi") {
+      setTemplateId((cur) =>
+        piImages.some((i) => i.id === cur)
+          ? cur
+          : piImages[0]?.id ?? "cuda_12_6_pytorch_2_7",
+      );
+      setImageOverride(null);
+    } else {
+      setTemplateId((cur) =>
+        templates.some((t) => t.id === cur) ? cur : templates[0]?.id ?? "pytorch-2.4-cuda12.4",
+      );
+      setImageOverride(null);
+    }
+  }, [providerKind, piImages, templates]);
 
   const availability = useGpuAvailability(
     gpuType,
     gpuCount,
     true,
     secureCloud ? "SECURE" : "COMMUNITY",
+    { kind: providerKind, id: providerId || null },
   );
 
   async function onSubmit(e: React.FormEvent) {
@@ -75,6 +192,7 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
         container_disk_gb: diskGb,
         volume_gb: volumeGb,
         template_id: templateId,
+        image: imageOverride,
         cloud_type: secureCloud ? "SECURE" : "COMMUNITY",
         provider_id: providerId || null,
       });
@@ -108,10 +226,10 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
         </div>
       </Section>
 
-      {/* Section: RunPod account */}
+      {/* Section: cloud account */}
       <Section
-        title="RunPod account"
-        description="Which RunPod API key to bill against. Default = gateway env key."
+        title="Cloud account"
+        description="Which API key to bill against. Default = gateway RunPod env key."
       >
         <div className="space-y-1.5">
           <Label>API key</Label>
@@ -123,20 +241,22 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="__default__">Gateway default</SelectItem>
+              <SelectItem value="__default__">Gateway default (RunPod)</SelectItem>
               {providers
-                .filter((p) => p.kind === "runpod")
+                .filter((p) => p.kind === "runpod" || p.kind === "pi")
                 .map((p) => (
                   <SelectItem key={p.id} value={p.id}>
                     {p.name}
+                    {" · "}
+                    {p.kind === "pi" ? "Prime Intellect" : "RunPod"}
                     {p.api_key_last4 ? ` · ****${p.api_key_last4}` : ""}
                   </SelectItem>
                 ))}
             </SelectContent>
           </Select>
-          {providers.filter((p) => p.kind === "runpod").length === 0 && (
+          {providers.filter((p) => p.kind === "runpod" || p.kind === "pi").length === 0 && (
             <p className="text-xs text-muted-foreground">
-              None registered. <a href="/providers/new" className="underline underline-offset-2 hover:text-foreground">Add a RunPod account →</a>
+              None registered. <a href="/providers/new" className="underline underline-offset-2 hover:text-foreground">Add a cloud account →</a>
             </p>
           )}
         </div>
@@ -167,25 +287,23 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
 
           <div className="space-y-1.5">
             <Label htmlFor="cmp-count">GPU count</Label>
-            <Input
+            <NumberField
               id="cmp-count"
-              type="number"
               min={1}
               max={8}
               value={gpuCount}
-              onChange={(e) => setGpuCount(Math.max(1, Math.min(8, Number(e.target.value) || 1)))}
+              onChange={setGpuCount}
             />
           </div>
 
           <div className="space-y-1.5">
             <Label htmlFor="cmp-disk">Container disk (GB)</Label>
-            <Input
+            <NumberField
               id="cmp-disk"
-              type="number"
               min={10}
               max={2000}
               value={diskGb}
-              onChange={(e) => setDiskGb(Math.max(10, Math.min(2000, Number(e.target.value) || 10)))}
+              onChange={setDiskGb}
             />
             <p className="text-xs text-muted-foreground">
               Working space for the container. Resets on pod stop.
@@ -194,13 +312,12 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
 
           <div className="space-y-1.5">
             <Label htmlFor="cmp-volume">Volume (GB)</Label>
-            <Input
+            <NumberField
               id="cmp-volume"
-              type="number"
               min={0}
               max={2000}
               value={volumeGb}
-              onChange={(e) => setVolumeGb(Math.max(0, Math.min(2000, Number(e.target.value) || 0)))}
+              onChange={setVolumeGb}
             />
             <p className="text-xs text-muted-foreground">
               0 = no persistent volume. Volume keeps data across stop/start.
@@ -227,33 +344,37 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
         </div>
       </Section>
 
-      {/* Section: template */}
-      <Section
-        title="Template"
-        description="JupyterLab is always enabled — every template here ships sshd + jupyter."
-      >
-        <div className="grid gap-2 sm:grid-cols-2">
-          {templates.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTemplateId(t.id)}
-              className={cn(
-                "rounded-lg border bg-card p-3 text-left transition-colors hover:border-foreground/40",
-                templateId === t.id
-                  ? "border-foreground/60 ring-1 ring-foreground/20"
-                  : "border-border",
-              )}
-            >
-              <div className="text-sm font-medium">{t.name}</div>
-              <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
-                {t.image}
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">{t.description}</p>
-            </button>
-          ))}
-        </div>
-      </Section>
+      {/* Section: template / image */}
+      {providerKind === "pi" ? (
+        <Section
+          title="Image"
+          description="Prime Intellect provides a fixed set of pre-baked images."
+        >
+          <PiImagePicker
+            images={piImages}
+            filtered={piImagesFiltered}
+            error={piImagesError}
+            value={templateId}
+            onChange={(id) => setTemplateId(id)}
+          />
+        </Section>
+      ) : (
+        <Section
+          title="Template"
+          description="JupyterLab is always enabled — every template here ships sshd + jupyter."
+        >
+          <RunpodTemplatePicker
+            curated={templates}
+            providerId={providerId || null}
+            value={templateId}
+            imageOverride={imageOverride}
+            onChange={(id, image) => {
+              setTemplateId(id);
+              setImageOverride(image);
+            }}
+          />
+        </Section>
+      )}
 
       <div className="flex items-center justify-end gap-3 border-t border-border pt-4">
         {submitError && (
@@ -321,5 +442,211 @@ function TierButton({
       <div className="text-sm font-medium">{label}</div>
       <div className="text-[11px] text-muted-foreground">{hint}</div>
     </button>
+  );
+}
+
+function PiImagePicker({
+  images,
+  filtered,
+  error,
+  value,
+  onChange,
+}: {
+  images: PiImageOption[];
+  filtered: boolean;
+  error: string | null;
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  // If the current `value` isn't in the (possibly newly-filtered) list, snap
+  // to the first available so the dropdown can't show a label-less selection.
+  useEffect(() => {
+    if (images.length === 0) return;
+    if (!images.some((i) => i.id === value)) {
+      onChange(images[0].id);
+    }
+  }, [images, value, onChange]);
+
+  if (images.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">Loading Prime Intellect images…</p>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {images.map((i) => (
+            <SelectItem key={i.id} value={i.id}>
+              <span className="font-medium">{i.name}</span>
+              <span className="ml-2 text-xs text-muted-foreground">{i.id}</span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p className="text-xs text-muted-foreground">
+        {images.find((i) => i.id === value)?.description ?? ""}
+      </p>
+      {filtered && (
+        <p className="text-[11px] text-muted-foreground">
+          Only images currently in stock on Prime Intellect for this GPU + tier are shown.
+        </p>
+      )}
+      {error && (
+        <p className="text-[11px] text-muted-foreground">
+          Using built-in fallback list (couldn&apos;t reach gateway: {error}). Restart the gateway to load the live list.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function RunpodTemplatePicker({
+  curated,
+  providerId,
+  value,
+  imageOverride,
+  onChange,
+}: {
+  curated: ComputeTemplate[];
+  providerId: string | null;
+  value: string;
+  imageOverride: string | null;
+  onChange: (templateId: string, image: string | null) => void;
+}) {
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<RunpodTemplateSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isCuratedPick = curated.some((t) => t.id === value);
+  const selectedCustom = !isCuratedPick && imageOverride
+    ? { id: value, name: value, image: imageOverride }
+    : null;
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true);
+      setSearchError(null);
+      try {
+        const rows = await gateway.searchRunpodTemplates({
+          q: query.trim(),
+          limit: 50,
+          provider_id: providerId,
+        });
+        setResults(rows);
+      } catch (e) {
+        setSearchError(e instanceof Error ? e.message : String(e));
+        setResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query, searchOpen, providerId]);
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-2">
+        {curated.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => onChange(t.id, null)}
+            className={cn(
+              "rounded-lg border bg-card p-3 text-left transition-colors hover:border-foreground/40",
+              value === t.id
+                ? "border-foreground/60 ring-1 ring-foreground/20"
+                : "border-border",
+            )}
+          >
+            <div className="text-sm font-medium">{t.name}</div>
+            <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+              {t.image}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">{t.description}</p>
+          </button>
+        ))}
+      </div>
+
+      {selectedCustom && (
+        <div className="rounded-lg border border-foreground/60 bg-card p-3 ring-1 ring-foreground/20">
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">
+            Custom RunPod template
+          </div>
+          <div className="mt-1 text-sm font-medium">{selectedCustom.name}</div>
+          <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+            {selectedCustom.image}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <button
+          type="button"
+          onClick={() => setSearchOpen((v) => !v)}
+          className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+        >
+          {searchOpen ? "Hide RunPod template search" : "Search all RunPod templates →"}
+        </button>
+      </div>
+
+      {searchOpen && (
+        <div className="space-y-2 rounded-lg border border-border bg-card p-3">
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="search by name, image, category…"
+          />
+          {searchError && (
+            <p className="text-xs text-destructive">{searchError}</p>
+          )}
+          {searching && (
+            <p className="text-xs text-muted-foreground">Searching…</p>
+          )}
+          {!searching && results.length > 0 && (
+            <div className="max-h-64 space-y-1 overflow-y-auto">
+              {results.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => onChange(r.id, r.image)}
+                  className={cn(
+                    "block w-full rounded-md border bg-card p-2 text-left transition-colors hover:border-foreground/40",
+                    value === r.id
+                      ? "border-foreground/60 ring-1 ring-foreground/20"
+                      : "border-border",
+                  )}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">{r.name}</span>
+                    {r.is_runpod && (
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                        official
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+                    {r.image}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          {!searching && results.length === 0 && query && !searchError && (
+            <p className="text-xs text-muted-foreground">No matches.</p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

@@ -188,8 +188,26 @@ export type CreateComputeRequest = {
   container_disk_gb?: number;
   volume_gb?: number;
   template_id: string;
+  // Required when template_id isn't one of the curated favourites — the
+  // resolved imageName from the RunPod templates search.
+  image?: string | null;
   cloud_type?: "COMMUNITY" | "SECURE";
   provider_id?: string | null;
+};
+
+export type RunpodTemplateSearchResult = {
+  id: string;
+  name: string;
+  image: string;
+  category?: string | null;
+  is_public: boolean;
+  is_runpod: boolean;
+};
+
+export type PiImageOption = {
+  id: string;
+  name: string;
+  description: string;
 };
 
 export type ComputeTemplate = {

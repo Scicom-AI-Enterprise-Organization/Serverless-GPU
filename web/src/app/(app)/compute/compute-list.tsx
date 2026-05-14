@@ -10,7 +10,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { ComputePod, ComputeStatus } from "@/lib/types";
+import type { ComputePod, ComputeStatus, ProviderRecord } from "@/lib/types";
 import { avatarFor } from "@/lib/avatar";
 import { formatCostUSD, useLiveCost } from "@/lib/cost";
 import { BurnFlame } from "@/components/burn-flame";
@@ -37,6 +37,15 @@ const STATUS_OPTIONS = [
 ] as const;
 type StatusFilter = (typeof STATUS_OPTIONS)[number];
 
+const PROVIDER_OPTIONS = ["all", "runpod", "pi"] as const;
+type ProviderFilter = (typeof PROVIDER_OPTIONS)[number];
+
+const PROVIDER_LABEL: Record<ProviderFilter, string> = {
+  all: "All providers",
+  runpod: "RunPod",
+  pi: "Prime Intellect",
+};
+
 function searchableText(p: ComputePod): string {
   return [
     p.name,
@@ -55,6 +64,16 @@ export function ComputeList({ items }: { items: ComputePod[] }) {
   const router = useRouter();
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
+  const [providerFilter, setProviderFilter] = useState<ProviderFilter>("all");
+  const [providers, setProviders] = useState<ProviderRecord[]>([]);
+  useEffect(() => {
+    gateway.listProviders().then(setProviders).catch(() => {});
+  }, []);
+  const providerKindById = useMemo(() => {
+    const m = new Map<string, ProviderRecord["kind"]>();
+    providers.forEach((p) => m.set(p.id, p.kind));
+    return m;
+  }, [providers]);
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
@@ -92,13 +111,21 @@ export function ComputeList({ items }: { items: ComputePod[] }) {
     const tokens = needle ? needle.split(/\s+/).filter(Boolean) : [];
     return items.filter((p) => {
       if (status !== "all" && p.status !== status) return false;
+      if (providerFilter !== "all") {
+        // Resolve kind for the row; NULL provider_id = legacy RunPod env path.
+        const kind = p.provider_id
+          ? providerKindById.get(p.provider_id) ?? "runpod"
+          : "runpod";
+        if (providerFilter === "runpod" && kind !== "runpod") return false;
+        if (providerFilter === "pi" && kind !== "pi") return false;
+      }
       if (tokens.length === 0) return true;
       const text = searchableText(p);
       return tokens.every((t) => text.includes(t));
     });
-  }, [items, q, status]);
+  }, [items, q, status, providerFilter, providerKindById]);
 
-  const hasFilter = q.trim().length > 0 || status !== "all";
+  const hasFilter = q.trim().length > 0 || status !== "all" || providerFilter !== "all";
 
   const onSingleDelete = async () => {
     if (!single) return;
@@ -165,6 +192,18 @@ export function ComputeList({ items }: { items: ComputePod[] }) {
           {STATUS_OPTIONS.map((s) => (
             <option key={s} value={s}>
               {s === "all" ? "All statuses" : s.replace("_", " ")}
+            </option>
+          ))}
+        </select>
+        <select
+          value={providerFilter}
+          onChange={(e) => setProviderFilter(e.target.value as ProviderFilter)}
+          className="h-10 rounded-md border border-input bg-background px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+          title="Filter by provider"
+        >
+          {PROVIDER_OPTIONS.map((p) => (
+            <option key={p} value={p}>
+              {PROVIDER_LABEL[p]}
             </option>
           ))}
         </select>
@@ -295,6 +334,7 @@ export function ComputeList({ items }: { items: ComputePod[] }) {
               selected={selected.has(p.id)}
               onToggle={toggle}
               onDelete={(pod) => setSingle(pod)}
+              providerKind={p.provider_id ? providerKindById.get(p.provider_id) : undefined}
             />
           ))}
         </ul>
@@ -373,12 +413,14 @@ function PodRow({
   selected,
   onToggle,
   onDelete,
+  providerKind,
 }: {
   pod: ComputePod;
   selectMode: boolean;
   selected: boolean;
   onToggle: (id: string) => void;
   onDelete?: (pod: ComputePod) => void;
+  providerKind?: "vm" | "runpod" | "pi";
 }) {
   const avatar = avatarFor(pod.name);
   const inner = (
@@ -464,6 +506,11 @@ function PodRow({
         <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 font-mono text-xs">
           {pod.cloud_type.toLowerCase()}
         </span>
+        {(providerKind === "pi" || providerKind === "runpod") && (
+          <span className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-2 py-0.5 text-xs">
+            {providerKind === "pi" ? "Prime Intellect" : "RunPod"}
+          </span>
+        )}
       </div>
 
       <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2 text-xs text-muted-foreground">
