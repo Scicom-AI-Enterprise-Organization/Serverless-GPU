@@ -210,6 +210,13 @@ export type PiImageOption = {
   description: string;
 };
 
+export type GpuTypeOption = {
+  id: string;
+  label: string;
+  vram_gb: number;
+  hint: string;
+};
+
 export type ComputeTemplate = {
   id: string;
   name: string;

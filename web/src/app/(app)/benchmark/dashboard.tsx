@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import yaml from "js-yaml";
 import { CheckCircle2, Clock, Layers, TrendingUp } from "lucide-react";
+import { shortGpu as formatGpu } from "@/lib/gpu-format";
 import type { BenchmarkRecord } from "@/lib/types";
 
 /** Decorated row used by chart + stats. Pulls out info from result_json + config_yaml
@@ -49,12 +50,7 @@ function decorate(bench: BenchmarkRecord): Decorated {
 }
 
 function shortGpu(name: string | null): string {
-  if (!name) return "—";
-  // "NVIDIA GeForce RTX 4090" → "RTX 4090"
-  return name
-    .replace(/^NVIDIA\s+/i, "")
-    .replace(/^GeForce\s+/i, "")
-    .replace(/\s+80GB\s+(HBM3|PCIe).*$/i, " 80GB");
+  return formatGpu(name) || "—";
 }
 
 function shortModel(name: string | null): string {

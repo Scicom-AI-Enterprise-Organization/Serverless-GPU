@@ -20,6 +20,7 @@ import { useGpuAvailability } from "@/lib/use-gpu-availability";
 import { gateway } from "@/lib/gateway";
 import type {
   ComputeTemplate,
+  GpuTypeOption,
   PiImageOption,
   ProviderRecord,
   RunpodTemplateSearchResult,
@@ -62,21 +63,44 @@ const PI_IMAGES_FALLBACK: PiImageOption[] = [
   },
 ];
 
-const GPU_OPTIONS = [
-  { id: "NVIDIA RTX A4000", label: "RTX A4000", hint: "16 GB · cheap baseline" },
-  { id: "NVIDIA RTX A5000", label: "RTX A5000", hint: "24 GB" },
-  { id: "NVIDIA RTX A6000", label: "RTX A6000", hint: "48 GB" },
-  { id: "NVIDIA GeForce RTX 4090", label: "RTX 4090", hint: "24 GB · consumer" },
-  { id: "NVIDIA L40", label: "L40", hint: "48 GB" },
-  { id: "NVIDIA L40S", label: "L40S", hint: "48 GB · faster L40" },
-  { id: "NVIDIA A100 80GB PCIe", label: "A100 80GB", hint: "datacenter" },
-  { id: "NVIDIA H100 80GB HBM3", label: "H100 80GB", hint: "fastest" },
+// Provider-native GPU catalogs (matches gateway constants). Used as a fallback
+// when /compute/{kind}/gpu-types is unreachable (older gateway). Otherwise the
+// form pulls the live list so newly added SKUs show up without a frontend deploy.
+const RUNPOD_GPU_FALLBACK: GpuTypeOption[] = [
+  { id: "NVIDIA RTX A4000", label: "RTX A4000", vram_gb: 16, hint: "cheap baseline" },
+  { id: "NVIDIA RTX A5000", label: "RTX A5000", vram_gb: 24, hint: "" },
+  { id: "NVIDIA RTX A6000", label: "RTX A6000", vram_gb: 48, hint: "" },
+  { id: "NVIDIA GeForce RTX 4090", label: "RTX 4090", vram_gb: 24, hint: "consumer" },
+  { id: "NVIDIA L40", label: "L40", vram_gb: 48, hint: "" },
+  { id: "NVIDIA L40S", label: "L40S", vram_gb: 48, hint: "faster L40" },
+  { id: "NVIDIA A100 80GB PCIe", label: "A100 80GB PCIe", vram_gb: 80, hint: "datacenter" },
+  { id: "NVIDIA H100 80GB HBM3", label: "H100 80GB SXM", vram_gb: 80, hint: "fastest H100" },
+];
+const PI_GPU_FALLBACK: GpuTypeOption[] = [
+  { id: "RTX3090_24GB", label: "RTX 3090", vram_gb: 24, hint: "consumer" },
+  { id: "RTX4090_24GB", label: "RTX 4090", vram_gb: 24, hint: "consumer" },
+  { id: "RTX5090_32GB", label: "RTX 5090", vram_gb: 32, hint: "consumer · Blackwell" },
+  { id: "A4000_16GB", label: "RTX A4000", vram_gb: 16, hint: "cheap baseline" },
+  { id: "A5000_24GB", label: "RTX A5000", vram_gb: 24, hint: "" },
+  { id: "A6000_48GB", label: "RTX A6000", vram_gb: 48, hint: "" },
+  { id: "A10_24GB", label: "A10", vram_gb: 24, hint: "" },
+  { id: "L4_24GB", label: "L4", vram_gb: 24, hint: "" },
+  { id: "L40_48GB", label: "L40", vram_gb: 48, hint: "" },
+  { id: "L40S_48GB", label: "L40S", vram_gb: 48, hint: "faster L40" },
+  { id: "A100_40GB", label: "A100 40GB", vram_gb: 40, hint: "" },
+  { id: "A100_80GB", label: "A100 80GB", vram_gb: 80, hint: "datacenter" },
+  { id: "H100_80GB", label: "H100 80GB", vram_gb: 80, hint: "fastest H100" },
+  { id: "H200_141GB", label: "H200", vram_gb: 141, hint: "newest" },
+  { id: "B200_180GB", label: "B200", vram_gb: 180, hint: "Blackwell datacenter" },
+  { id: "MI300X_192GB", label: "MI300X", vram_gb: 192, hint: "AMD" },
 ];
 
 export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
   const router = useRouter();
   const [name, setName] = useState("dev-pod");
-  const [gpuType, setGpuType] = useState("NVIDIA RTX A4000");
+  const [gpuType, setGpuType] = useState<string>(RUNPOD_GPU_FALLBACK[0].id);
+  const [runpodGpus, setRunpodGpus] = useState<GpuTypeOption[]>(RUNPOD_GPU_FALLBACK);
+  const [piGpus, setPiGpus] = useState<GpuTypeOption[]>(PI_GPU_FALLBACK);
   const [gpuCount, setGpuCount] = useState(1);
   const [diskGb, setDiskGb] = useState(40);
   const [volumeGb, setVolumeGb] = useState(0);
@@ -107,6 +131,18 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
         setPiImages(PI_IMAGES_FALLBACK);
         setPiImagesError(e instanceof Error ? e.message : String(e));
       });
+    gateway
+      .listRunpodGpuTypes()
+      .then((rows) => {
+        if (rows.length > 0) setRunpodGpus(rows);
+      })
+      .catch(() => {});
+    gateway
+      .listPiGpuTypes()
+      .then((rows) => {
+        if (rows.length > 0) setPiGpus(rows);
+      })
+      .catch(() => {});
   }, []);
 
   const selectedProvider = useMemo(
@@ -114,6 +150,16 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
     [providers, providerId],
   );
   const providerKind: "runpod" | "pi" = selectedProvider?.kind === "pi" ? "pi" : "runpod";
+  const gpuCatalog: GpuTypeOption[] = providerKind === "pi" ? piGpus : runpodGpus;
+
+  // Snap gpuType to the active catalog when provider kind changes (or when
+  // catalogs first load) so we never send a RunPod-form name to PI's API.
+  useEffect(() => {
+    if (gpuCatalog.length === 0) return;
+    if (!gpuCatalog.some((g) => g.id === gpuType)) {
+      setGpuType(gpuCatalog[0].id);
+    }
+  }, [providerKind, gpuCatalog, gpuType]);
 
   // For PI: narrow the image list to ones at least one in-stock sub-provider
   // supports for the current (gpu, count, tier). Re-runs when those change.
@@ -272,11 +318,11 @@ export function NewPodForm({ templates }: { templates: ComputeTemplate[] }) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {GPU_OPTIONS.map((g) => (
+                {gpuCatalog.map((g) => (
                   <SelectItem key={g.id} value={g.id}>
                     <span className="font-medium">{g.label}</span>
                     <span className="ml-2 text-xs text-muted-foreground">
-                      {g.hint}
+                      {g.vram_gb} GB{g.hint ? ` · ${g.hint}` : ""}
                     </span>
                   </SelectItem>
                 ))}

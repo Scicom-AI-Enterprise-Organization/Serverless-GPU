@@ -406,10 +406,55 @@ def _pi_client(api_key: str) -> httpx.AsyncClient:
     )
 
 
-# Our compute UI labels GPUs with full RunPod-style names ("NVIDIA GeForce RTX
-# 4090"); PI's API wants its own enum names ("RTX4090_24GB"). The mapping
-# covers every entry currently in GPU_OPTIONS on the new-pod form plus a few
-# short aliases for benchmark forms / API callers.
+# Provider-native GPU catalogs. Each provider exposes its own list (served by
+# /compute/{kind}/gpu-types) so the new-pod form can show real per-provider
+# hardware instead of pretending one universal naming scheme exists. The `id`
+# field is the *provider-native* enum we send and store in `compute_pods.gpu_type`.
+
+RUNPOD_GPU_TYPES: list[dict[str, Any]] = [
+    {"id": "NVIDIA RTX A4000", "label": "RTX A4000", "vram_gb": 16, "hint": "cheap baseline"},
+    {"id": "NVIDIA RTX A5000", "label": "RTX A5000", "vram_gb": 24, "hint": ""},
+    {"id": "NVIDIA RTX A6000", "label": "RTX A6000", "vram_gb": 48, "hint": ""},
+    {"id": "NVIDIA GeForce RTX 4090", "label": "RTX 4090", "vram_gb": 24, "hint": "consumer"},
+    {"id": "NVIDIA GeForce RTX 5090", "label": "RTX 5090", "vram_gb": 32, "hint": "consumer · Blackwell"},
+    {"id": "NVIDIA L4", "label": "L4", "vram_gb": 24, "hint": ""},
+    {"id": "NVIDIA L40", "label": "L40", "vram_gb": 48, "hint": ""},
+    {"id": "NVIDIA L40S", "label": "L40S", "vram_gb": 48, "hint": "faster L40"},
+    {"id": "NVIDIA A40", "label": "A40", "vram_gb": 48, "hint": ""},
+    {"id": "NVIDIA A100 80GB PCIe", "label": "A100 80GB PCIe", "vram_gb": 80, "hint": "datacenter"},
+    {"id": "NVIDIA A100-SXM4-80GB", "label": "A100 80GB SXM", "vram_gb": 80, "hint": "datacenter"},
+    {"id": "NVIDIA H100 PCIe", "label": "H100 PCIe", "vram_gb": 80, "hint": ""},
+    {"id": "NVIDIA H100 80GB HBM3", "label": "H100 80GB SXM", "vram_gb": 80, "hint": "fastest H100"},
+    {"id": "NVIDIA H100 NVL", "label": "H100 NVL", "vram_gb": 94, "hint": ""},
+    {"id": "NVIDIA H200", "label": "H200", "vram_gb": 141, "hint": "newest"},
+    {"id": "NVIDIA B200", "label": "B200", "vram_gb": 180, "hint": "Blackwell datacenter"},
+]
+
+PI_GPU_TYPES: list[dict[str, Any]] = [
+    {"id": "RTX3090_24GB", "label": "RTX 3090", "vram_gb": 24, "hint": "consumer"},
+    {"id": "RTX4090_24GB", "label": "RTX 4090", "vram_gb": 24, "hint": "consumer"},
+    {"id": "RTX5090_32GB", "label": "RTX 5090", "vram_gb": 32, "hint": "consumer · Blackwell"},
+    {"id": "A4000_16GB", "label": "RTX A4000", "vram_gb": 16, "hint": "cheap baseline"},
+    {"id": "A5000_24GB", "label": "RTX A5000", "vram_gb": 24, "hint": ""},
+    {"id": "A6000_48GB", "label": "RTX A6000", "vram_gb": 48, "hint": ""},
+    {"id": "A10_24GB", "label": "A10", "vram_gb": 24, "hint": ""},
+    {"id": "L4_24GB", "label": "L4", "vram_gb": 24, "hint": ""},
+    {"id": "L40_48GB", "label": "L40", "vram_gb": 48, "hint": ""},
+    {"id": "L40S_48GB", "label": "L40S", "vram_gb": 48, "hint": "faster L40"},
+    {"id": "A100_40GB", "label": "A100 40GB", "vram_gb": 40, "hint": ""},
+    {"id": "A100_80GB", "label": "A100 80GB", "vram_gb": 80, "hint": "datacenter"},
+    {"id": "H100_80GB", "label": "H100 80GB", "vram_gb": 80, "hint": "fastest H100"},
+    {"id": "H200_141GB", "label": "H200", "vram_gb": 141, "hint": "newest"},
+    {"id": "B200_180GB", "label": "B200", "vram_gb": 180, "hint": "Blackwell datacenter"},
+    {"id": "MI300X_192GB", "label": "MI300X", "vram_gb": 192, "hint": "AMD"},
+]
+
+
+# Back-compat: rows created before the per-provider catalog (or via the old
+# benchmark form) store PI gpu_type in RunPod long-form ("NVIDIA H100 80GB
+# HBM3"). _map_pi_gpu translates those legacy values to PI's enum at create /
+# availability time so existing pods keep working. For new rows submitted from
+# the per-provider form, gpu_type is already PI-native and this is a no-op.
 _PI_GPU_MAP = {
     # RunPod-form (what new-pod-form.tsx ships)
     "NVIDIA H100 80GB HBM3": "H100_80GB",
@@ -1325,6 +1370,23 @@ def _gen_id() -> str:
 @router.get("/templates", response_model=list[TemplateRecord])
 async def list_templates(_: User = Depends(require_section("compute"))):
     return [TemplateRecord(**t) for t in CURATED_TEMPLATES]
+
+
+class GpuTypeOption(BaseModel):
+    id: str
+    label: str
+    vram_gb: int
+    hint: str = ""
+
+
+@router.get("/runpod/gpu-types", response_model=list[GpuTypeOption])
+async def list_runpod_gpu_types(_: User = Depends(require_section("compute"))):
+    return [GpuTypeOption(**g) for g in RUNPOD_GPU_TYPES]
+
+
+@router.get("/pi/gpu-types", response_model=list[GpuTypeOption])
+async def list_pi_gpu_types(_: User = Depends(require_section("compute"))):
+    return [GpuTypeOption(**g) for g in PI_GPU_TYPES]
 
 
 @router.get("/runpod/templates", response_model=list[RunpodTemplateSearchResult])

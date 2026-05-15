@@ -15,6 +15,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { gateway } from "@/lib/gateway";
+import { shortGpu } from "@/lib/gpu-format";
 import type { ComputePod } from "@/lib/types";
 
 export function ApprovalsList({ initial }: { initial: ComputePod[] }) {
@@ -213,9 +214,3 @@ export function ApprovalsList({ initial }: { initial: ComputePod[] }) {
   );
 }
 
-function shortGpu(gpu: string): string {
-  return gpu
-    .replace(/^NVIDIA\s+/i, "")
-    .replace(/\s+GeForce\s+/i, " ")
-    .replace(/^GeForce\s+/i, "");
-}

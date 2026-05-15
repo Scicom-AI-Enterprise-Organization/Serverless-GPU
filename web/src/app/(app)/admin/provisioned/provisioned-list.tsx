@@ -15,6 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { gateway } from "@/lib/gateway";
+import { shortGpu } from "@/lib/gpu-format";
 import type { AppRecord, ComputePod } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -307,10 +308,4 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-function shortGpu(gpu: string): string {
-  return gpu
-    .replace(/^NVIDIA\s+/i, "")
-    .replace(/\s+GeForce\s+/i, " ")
-    .replace(/^GeForce\s+/i, "");
-}
 

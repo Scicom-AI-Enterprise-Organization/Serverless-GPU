@@ -15,6 +15,7 @@ import type {
   ComputePod,
   ComputeSshInfo,
   ComputeTemplate,
+  GpuTypeOption,
   PiImageOption,
   RunpodTemplateSearchResult,
   CreateAppRequest,
@@ -208,6 +209,9 @@ export const gateway = {
       `/compute/runpod/templates${q ? `?${q}` : ""}`,
     );
   },
+  listRunpodGpuTypes: () =>
+    request<GpuTypeOption[]>("/compute/runpod/gpu-types"),
+  listPiGpuTypes: () => request<GpuTypeOption[]>("/compute/pi/gpu-types"),
   listPiImages: () => request<PiImageOption[]>("/compute/pi/images"),
   listPiCompatibleImages: (params: {
     gpu: string;

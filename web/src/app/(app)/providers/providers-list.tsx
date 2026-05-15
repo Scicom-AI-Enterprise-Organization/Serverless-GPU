@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { shortGpu } from "@/lib/gpu-format";
 import {
   Dialog,
   DialogContent,
@@ -254,9 +255,3 @@ export function ProvidersList({ items }: { items: ProviderRecord[] }) {
   );
 }
 
-function shortGpu(gpu: string): string {
-  return gpu
-    .replace(/^NVIDIA\s+/i, "")
-    .replace(/\s+GeForce\s+/i, " ")
-    .replace(/^GeForce\s+/i, "");
-}

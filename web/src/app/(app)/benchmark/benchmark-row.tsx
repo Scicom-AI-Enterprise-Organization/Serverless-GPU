@@ -14,6 +14,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { shortGpu as formatGpu } from "@/lib/gpu-format";
 import { cn } from "@/lib/utils";
 
 // Status pill is the only place this row uses colour. Pattern matches Compute:
@@ -27,11 +28,7 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 function shortGpu(s: string | null | undefined): string {
-  if (!s) return "—";
-  return s
-    .replace(/^NVIDIA\s+/i, "")
-    .replace(/^GeForce\s+/i, "")
-    .replace(/\s+80GB\s+(HBM3|PCIe).*$/i, " 80GB");
+  return formatGpu(s) || "—";
 }
 
 function shortModel(s: string | null | undefined): string {

@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { BarChart3, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { shortGpu as formatGpu } from "@/lib/gpu-format";
 import {
   Card,
   CardContent,
@@ -58,8 +59,7 @@ const CHARTS: { key: MetricKey; title: string; yLabel: string }[] = [
 ];
 
 function shortGpu(s: string | null | undefined): string {
-  if (!s) return "—";
-  return s.replace(/^NVIDIA\s+/i, "").replace(/^GeForce\s+/i, "").replace(/\s+80GB\s+(HBM3|PCIe).*$/i, " 80GB");
+  return formatGpu(s) || "—";
 }
 
 function shortModel(s: string | null | undefined): string {

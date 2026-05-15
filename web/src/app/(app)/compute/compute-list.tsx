@@ -14,6 +14,7 @@ import type { ComputePod, ComputeStatus, ProviderRecord } from "@/lib/types";
 import { avatarFor } from "@/lib/avatar";
 import { formatCostUSD, useLiveCost } from "@/lib/cost";
 import { BurnFlame } from "@/components/burn-flame";
+import { shortGpu } from "@/lib/gpu-format";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -607,10 +608,4 @@ function StatusPill({ status }: { status: ComputeStatus }) {
   );
 }
 
-function shortGpu(gpu: string): string {
-  return gpu
-    .replace(/^NVIDIA\s+/i, "")
-    .replace(/\s+GeForce\s+/i, " ")
-    .replace(/^GeForce\s+/i, "");
-}
 
